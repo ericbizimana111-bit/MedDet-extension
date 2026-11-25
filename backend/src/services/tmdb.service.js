@@ -1,6 +1,7 @@
 const { env } = require('../config/env');
 const AppError = require('../utils/AppError');
 const { scoreTmdbResult } = require('../utils/matching');
+const httpsRequest = require('../utils/httpsRequest');
 
 const BASE = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p';
@@ -10,14 +11,24 @@ async function tmdb(path, params = {}) {
   const qs = new URLSearchParams({ api_key: env.tmdb.apiKey, language: 'en-US', ...params });
   let res;
   try {
-    res = await fetch(`${BASE}${path}?${qs}`, { signal: AbortSignal.timeout(10_000) });
-  } catch {
-    throw new AppError(504, 'METADATA_TIMEOUT', 'The movie database took too long to respond.');
+    res = await httpsRequest.requestHttps(`${BASE}${path}?${qs}`, {
+      timeoutMs: 10_000,
+      maxResponseBytes: 2_000_000,
+    });
+  } catch (error) {
+    if (error.code === 'ETIMEDOUT') {
+      throw new AppError(504, 'METADATA_TIMEOUT', 'The movie database took too long to respond.');
+    }
+    throw new AppError(502, 'METADATA_UNAVAILABLE', 'The movie database is unavailable right now.');
   }
   if (res.status === 401) throw new AppError(502, 'TMDB_REJECTED', 'The movie database rejected the server credentials.');
   if (res.status === 429) throw new AppError(503, 'METADATA_BUSY', 'The movie database is busy. Please try again shortly.');
-  if (!res.ok) throw new AppError(502, 'METADATA_UNAVAILABLE', 'The movie database is unavailable right now.');
-  return res.json();
+  if (res.status < 200 || res.status >= 300) throw new AppError(502, 'METADATA_UNAVAILABLE', 'The movie database is unavailable right now.');
+  try {
+    return JSON.parse(res.body);
+  } catch {
+    throw new AppError(502, 'METADATA_INVALID_RESPONSE', 'The movie database returned an invalid response.');
+  }
 }
 
 /** Search the right media type and return the best-scoring verified result (or null). */

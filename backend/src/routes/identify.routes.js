@@ -5,7 +5,7 @@ const { movieSchema, musicSchema } = require('../validators/identify.validators'
 const { movieLimiter, musicLimiter, dailyBudget } = require('../middleware/rateLimit.middleware');
 
 // Order matters: cheap checks first, paid services last.
-router.post('/movie', movieLimiter, dailyBudget, validate(movieSchema), ctrl.movie);
-router.post('/music', musicLimiter, dailyBudget, validate(musicSchema), ctrl.music);
+router.post('/movie', movieLimiter, validate(movieSchema), dailyBudget('gemini'), ctrl.movie);
+router.post('/music', musicLimiter, validate(musicSchema), dailyBudget('music'), ctrl.music);
 
 module.exports = router;

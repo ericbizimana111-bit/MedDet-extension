@@ -1,8 +1,8 @@
 
-const https = require('node:https');
 const { z } = require('zod');
 const { env } = require('../config/env');
 const AppError = require('../utils/AppError');
+const httpsRequest = require('../utils/httpsRequest');
 
 const candidateSchema = z.object({
   title: z.string().min(1).max(200),
@@ -17,6 +17,14 @@ const resultSchema = z.object({
   requiresMoreEvidence: z.boolean().default(false),
 });
 
+const responseSchema = z.object({
+  candidates: z.array(z.object({
+    content: z.object({
+      parts: z.array(z.object({ text: z.string().optional() })),
+    }),
+  })).min(1),
+});
+
 const PROMPT = `You are the scene-recognition engine of a movie and TV identification tool.
 You receive several frames taken from ONE short video clip, in time order.
 Task: decide which movie or TV show the clip comes from.
@@ -29,42 +37,36 @@ Rules:
 Respond with JSON only, exactly in this shape:
 {"candidates":[{"title":string,"releaseYear":number|null,"mediaType":"movie"|"tv","evidence":[string],"confidence":"high"|"medium"|"low"}],"requiresMoreEvidence":boolean}`;
 
-function postJson(url, apiKey, body) {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body);
+function parseGeminiResponse(body) {
+  let data;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    throw new AppError(502, 'AI_INVALID_RESPONSE', 'The analysis service returned an invalid response.');
+  }
 
-    const req = https.request(url, {
-      method: 'POST',
-      family: 4,
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-        'Content-Length': Buffer.byteLength(payload),
-      },
-      timeout: 40000,
-    }, (res) => {
-      let responseBody = '';
+  const parsedEnvelope = responseSchema.safeParse(data);
+  if (!parsedEnvelope.success) {
+    throw new AppError(502, 'AI_INVALID_RESPONSE', 'The analysis service returned an invalid response.');
+  }
 
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => {
-        responseBody += chunk;
-      });
+  const text = parsedEnvelope.data.candidates[0].content.parts
+    .map((part) => part.text || '')
+    .join('')
+    .trim();
+  if (!text) return { candidates: [], requiresMoreEvidence: true };
 
-      res.on('end', () => {
-        resolve({
-          status: res.statusCode,
-          body: responseBody,
-        });
-      });
-    });
+  let json;
+  try {
+    json = JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch {
+    return { candidates: [], requiresMoreEvidence: true };
+  }
 
-    req.on('timeout', () => {
-      req.destroy(new Error('Gemini request timed out'));
-    });
-
-    req.on('error', reject);
-    req.end(payload);
-  });
+  const parsedResult = resultSchema.safeParse(json);
+  return parsedResult.success
+    ? parsedResult.data
+    : { candidates: [], requiresMoreEvidence: true };
 }
 
 async function identifyScene(frames) {
@@ -94,37 +96,33 @@ async function identifyScene(frames) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(env.gemini.model)}:generateContent`;
 
   let response;
-
+  const payload = JSON.stringify({
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+    },
+  });
   try {
-    response = await postJson(url, env.gemini.apiKey, {
-      contents: [{ role: 'user', parts }],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: 'application/json',
+    response = await httpsRequest.requestHttps(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': env.gemini.apiKey,
+        'Content-Length': Buffer.byteLength(payload),
       },
+      body: payload,
+      timeoutMs: 40_000,
+      maxResponseBytes: 2_000_000,
     });
   } catch (error) {
-    console.error('[gemini] Connection error:', error.message);
-
-    throw new AppError(
-      504,
-      'AI_TIMEOUT',
-      'The analysis service could not be reached. Please try again.'
-    );
-  }
-
-  let data;
-
-  try {
-    data = JSON.parse(response.body);
-  } catch {
-    console.error('[gemini] Invalid response:', response.status);
-
-    throw new AppError(
-      502,
-      'AI_INVALID_RESPONSE',
-      'The analysis service returned an invalid response.'
-    );
+    if (error.code !== 'ERESPONSETOOLARGE') {
+      console.error('[gemini] Request failed:', error.code || 'network error');
+    }
+    if (error.code === 'ETIMEDOUT') {
+      throw new AppError(504, 'AI_TIMEOUT', 'The analysis service could not be reached. Please try again.');
+    }
+    throw new AppError(502, 'AI_UNAVAILABLE', 'The analysis service is unavailable right now.');
   }
 
   if (response.status === 429) {
@@ -136,11 +134,7 @@ async function identifyScene(frames) {
   }
 
   if (response.status === 400 || response.status === 403) {
-    console.error(
-      '[gemini]',
-      response.status,
-      response.body.slice(0, 300)
-    );
+    console.error('[gemini] Request rejected with HTTP', response.status);
 
     throw new AppError(
       502,
@@ -150,7 +144,7 @@ async function identifyScene(frames) {
   }
 
   if (response.status === 503) {
-    console.error('[gemini] Service temporarily unavailable:', data.error?.message);
+    console.error('[gemini] Service temporarily unavailable (HTTP 503)');
 
     throw new AppError(
       503,
@@ -160,7 +154,7 @@ async function identifyScene(frames) {
   }
 
   if (response.status < 200 || response.status >= 300) {
-    console.error('[gemini]', response.status, data.error?.message);
+    console.error('[gemini] Upstream request failed with HTTP', response.status);
 
     throw new AppError(
       502,
@@ -169,31 +163,12 @@ async function identifyScene(frames) {
     );
   }
 
-  const text = data?.candidates?.[0]?.content?.parts
-    ?.map((part) => part.text || '')
-    .join('') || '';
-
-  let json;
-
   try {
-    json = JSON.parse(text.replace(/```json|```/g, '').trim());
-  } catch {
-    return {
-      candidates: [],
-      requiresMoreEvidence: true,
-    };
+    return parseGeminiResponse(response.body);
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError(502, 'AI_INVALID_RESPONSE', 'The analysis service returned an invalid response.');
   }
-
-  const parsed = resultSchema.safeParse(json);
-
-  if (!parsed.success) {
-    return {
-      candidates: [],
-      requiresMoreEvidence: true,
-    };
-  }
-
-  return parsed.data;
 }
 
-module.exports = { identifyScene };
+module.exports = { identifyScene, parseGeminiResponse };
