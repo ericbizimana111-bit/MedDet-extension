@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MedDet</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>MedDet</h1>
+    <p>Identify the movie, show or song playing in a video.</p>
+  </header>
+
+  <label class="switch">
+    <input type="checkbox" id="enabled">
+    <span>Show the Identify button on videos</span>
+  </label>
+
+  <section>
+    <p class="hint">Open a video on YouTube, TikTok, Instagram or Facebook. The MedDet button appears on the video that is playing.</p>
+  </section>
+
+  <section>
+    <label for="server">Server address</label>
+    <input id="server" type="url" placeholder="http://localhost:5000" spellcheck="false">
+    <div class="row">
+      <button id="save">Save and check</button>
+    </div>
+    <p id="status" role="status"></p>
+  </section>
+  <script src="popup.js"></script>
+</body>
+</html>
