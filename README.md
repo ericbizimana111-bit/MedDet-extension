@@ -46,7 +46,22 @@ curl http://localhost:5000/api/v1/health
 ## Cost protection
 
 `RATE_LIMIT_PER_HOUR` per IP (movie), `RATE_LIMIT_MUSIC_PER_HOUR` per IP (music), `DAILY_GLOBAL_LIMIT` total
-paid-service requests per day. Request size is capped. Validation runs before any paid call.
+paid-service requests per day per backend process. Request size is capped. Request validation runs before
+the daily paid-service budget is consumed. The in-memory daily counter resets at UTC midnight and is not
+shared across multiple server instances. The per-IP rate-limit store is also in-memory; use a shared store
+before scaling out. The Express proxy setting assumes exactly one trusted reverse proxy.
+
+## Backend request formats
+
+- `POST /api/v1/identify/movie`: JSON body `{ "frames": [{ "image": "<base64 JPEG/PNG/WebP>", "timestamp": 1.2 }], "platform": "youtube" }`.
+  `frames` is required (1–6 images); `image` may also be a matching `data:image/...;base64,` URL.
+- `POST /api/v1/identify/music`: JSON body `{ "audio": "<base64 audio>", "mimeType": "audio/wav", "platform": "youtube" }`.
+  Music identification returns `ACR_NOT_CONFIGURED` until all three ACRCloud values are set.
+- `GET /api/v1/health`: reports server status and whether the required service credentials are configured.
+  A true service flag indicates configuration only, not a live upstream connectivity check.
+
+The Gemini, TMDB, and ACRCloud integrations use IPv4-selected HTTPS requests with bounded timeouts.
+Automated tests mock the paid upstream services; passing them does not establish live API availability.
 
 ## Known limits (honest list)
 
