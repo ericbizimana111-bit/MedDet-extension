@@ -8,7 +8,7 @@ const IMG = 'https://image.tmdb.org/t/p';
 const IMAGE_PATH = /^\/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp)$/i;
 
 function tmdbImage(path, size) {
-  if (typeof path !== 'string' || !IMAGE_PATH.test(path)) return null;
+  if (!['w342', 'w780', 'original'].includes(size) || typeof path !== 'string' || !IMAGE_PATH.test(path)) return null;
   return `${IMG}/${size}/${encodeURIComponent(path.slice(1))}`;
 }
 

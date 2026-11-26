@@ -100,6 +100,15 @@
   }
 
   const requestFrames = (frames) => frames.map(({ image, timestamp }) => ({ image, timestamp }));
+  const sceneFrameFor = (frames) => {
+    if (!frames.length) return null;
+    const ordered = [...frames].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    const frame = ordered[Math.floor((ordered.length - 1) / 2)];
+    return {
+      dataUrl: `data:image/jpeg;base64,${frame.image}`,
+      timestamp: frame.timestamp,
+    };
+  };
 
   async function run(kind, continuation = null) {
     if (busy) return;
@@ -197,10 +206,19 @@
         }
         if (d.status === 'possible_match') {
           const next = d.sessionId ? () => run('movie', { sessionId: d.sessionId, frames: [...priorFrames, ...frames] }) : null;
-          return ui.showMovie(d.matches, loadImage, { onRetry: retry, onAnalyzeMore: next, status: d.status });
+          return ui.showMovie(d.matches, loadImage, {
+            onRetry: retry,
+            onAnalyzeMore: next,
+            status: d.status,
+            sceneFrame: sceneFrameFor([...priorFrames, ...frames]),
+          });
         }
         if (d.status === 'completed') {
-          return ui.showMovie(d.matches, loadImage, { onRetry: retry, status: d.status });
+          return ui.showMovie(d.matches, loadImage, {
+            onRetry: retry,
+            status: d.status,
+            sceneFrame: sceneFrameFor([...priorFrames, ...frames]),
+          });
         }
         return showError('BAD_RESPONSE', 'The server returned an unexpected identification status.');
       } else {

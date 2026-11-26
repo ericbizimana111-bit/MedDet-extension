@@ -14,7 +14,7 @@
 .btn:hover,.btn:focus-visible,.btn[aria-expanded=true]{gap:8px;padding:0 14px 0 10px}
 .btn:hover .lbl,.btn:focus-visible .lbl,.btn[aria-expanded=true] .lbl{max-width:80px}
 .btn:focus-visible{outline:2px solid #fff;outline-offset:2px}
-.card{position:fixed;display:none;width:312px;max-height:70vh;overflow:auto;border-radius:14px;background:#F6F5F1;color:#14161F;
+.card{position:fixed;display:none;width:min(380px,calc(100vw - 16px));max-height:70vh;overflow:auto;border-radius:14px;background:#F6F5F1;color:#14161F;
   box-shadow:0 12px 40px rgba(0,0,0,.45);font-size:14px;line-height:1.4}
 .menu{padding:6px}
 .opt{display:flex;align-items:center;gap:12px;width:100%;padding:12px;border:0;border-radius:10px;background:none;color:inherit;text-align:left;cursor:pointer;font-size:14px}
@@ -32,7 +32,15 @@ h3{margin:0 0 4px;font-size:16px;font-weight:700}
 p{margin:0 0 10px;color:#3A4050}
 .bar{height:4px;border-radius:2px;background:#DAD8CF;overflow:hidden;margin:6px 0 12px}.bar i{display:block;height:100%;background:#0F8F83;transition:width .3s}
 .row{display:flex;gap:12px}
-.poster{flex:none;width:84px;height:126px;border-radius:8px;background:#DAD8CF;object-fit:cover}
+.artwork{position:relative;margin:0 0 12px;overflow:hidden;border-radius:10px;background:#E6E4DC}
+.artwork[hidden]{display:none}
+.artwork img{display:block;width:100%;height:auto;object-fit:cover}
+.artwork.hero img{aspect-ratio:16/9}
+.artwork.poster-art{width:104px;flex:none}
+.artwork.poster-art img{aspect-ratio:2/3}
+.artwork.scene-art img{aspect-ratio:16/9}
+.artwork figcaption{padding:5px 8px;font-size:11px;color:#5A6070;background:#F6F5F1}
+.poster{flex:none;width:84px;height:126px;border-radius:8px;object-fit:cover}
 .meta{font-size:12px;color:#5A6070;margin:2px 0 8px}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:650;margin-bottom:6px}
 .high{background:#CDEFE7;color:#0B5F56}.possible{background:#F6E7B8;color:#6B4E00}.low{background:#EBD0CC;color:#7A2A20}
@@ -104,7 +112,7 @@ p{margin:0 0 10px;color:#3A4050}
 
   function placeCard() {
     if (!cardOpen) return;
-    const w = 312;
+    const w = Math.min(380, window.innerWidth - 16);
     const left = Math.min(Math.max(8, btnRect.x + 40 - w), window.innerWidth - w - 8);
     const top = Math.min(btnRect.y + 48, Math.max(8, window.innerHeight - 160));
     card.style.left = left + 'px'; card.style.top = top + 'px';
@@ -154,11 +162,68 @@ p{margin:0 0 10px;color:#3A4050}
 
   function posterEl(cls) { const i = h('img', { class: cls, alt: '' }); return i; }
 
-  function showMovie(matches, loadImage, { onRetry, onAnalyzeMore, status }) {
+  function isTmdbImageUrl(value) {
+    if (typeof value !== 'string') return false;
+    try {
+      const url = new URL(value);
+      return url.origin === 'https://image.tmdb.org'
+        && /^\/t\/p\/(?:w\d{2,4}|original)\/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp)$/i.test(url.pathname)
+        && !url.search && !url.hash;
+    } catch {
+      return false;
+    }
+  }
+
+  function artworkSources(match, sceneFrame) {
+    const sources = [];
+    if (isTmdbImageUrl(match?.backdrop)) {
+      sources.push({ url: match.backdrop, label: 'Official TMDB backdrop', kind: 'backdrop' });
+    }
+    if (isTmdbImageUrl(match?.poster)) {
+      sources.push({ url: match.poster, label: 'Official TMDB poster', kind: 'poster' });
+    }
+    if (typeof sceneFrame?.dataUrl === 'string'
+        && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/.test(sceneFrame.dataUrl)) {
+      sources.push({ dataUrl: sceneFrame.dataUrl, label: 'Scene analyzed', kind: 'scene' });
+    }
+    return sources;
+  }
+
+  function artworkFigure(label, className) {
+    const image = h('img', { alt: label, loading: 'lazy', decoding: 'async' });
+    const caption = h('figcaption', { text: label });
+    const element = h('figure', { class: 'artwork ' + className, hidden: '' }, image, caption);
+    return { element, image, caption };
+  }
+
+  async function loadArtwork(figure, sources, loadImage) {
+    for (const source of sources) {
+      try {
+        const url = source.dataUrl || await loadImage(source.url);
+        if (!url) continue;
+        const loaded = await new Promise((resolve) => {
+          figure.image.onload = () => resolve(true);
+          figure.image.onerror = () => resolve(false);
+          figure.image.src = url;
+        });
+        if (!loaded) continue;
+        figure.caption.textContent = source.label;
+        figure.element.hidden = false;
+        return source.kind;
+      } catch {
+        // A missing catalog image should fall through to the next verified source.
+      }
+    }
+    figure.element.remove();
+    return null;
+  }
+
+  function showMovie(matches, loadImage, { onRetry, onAnalyzeMore, status, sceneFrame }) {
     const top = matches[0];
     const ambiguousStrongMatch = status === 'possible_match' && top.matchLevel === 'high';
-    const poster = posterEl('poster');
-    loadImage(top.poster).then((u) => u && (poster.src = u));
+    const hero = artworkFigure('Official TMDB artwork', 'hero');
+    const poster = artworkFigure('Official poster', 'poster-art');
+    const scene = artworkFigure('Scene analyzed', 'scene-art');
     const kind = top.mediaType === 'tv' ? 'TV show' : 'Movie';
     const meta = [kind, top.releaseYear, top.runtime ? top.runtime + ' min' : null, top.rating ? '★ ' + top.rating : null].filter(Boolean).join(', ');
     const catalogQuality = {
@@ -169,13 +234,16 @@ p{margin:0 0 10px;color:#3A4050}
     }[top.catalogMatchQuality];
     const evidenceLabel = top.evidenceQuality === 'multiple_clues' ? 'multiple visual clues' : 'limited visual clues';
     const parts = [
-      h('div', { class: 'row' }, poster, h('div', {},
+      hero.element,
+      poster.element,
+      scene.element,
+      h('div', { class: 'row' }, h('div', {},
         h('span', {
           class: 'badge ' + (ambiguousStrongMatch ? 'possible' : top.matchLevel),
           text: ambiguousStrongMatch ? 'Possible match (ambiguous)' : LEVEL[top.matchLevel] || 'Possible match',
         }),
         h('h3', { text: top.title }), h('div', { class: 'meta', text: meta }),
-        top.genres?.length ? h('div', { class: 'meta', text: top.genres.slice(0, 3).join(', ') }) : null)),
+        top.genres?.length ? h('div', { class: 'meta', text: top.genres.slice(0, 3).join(', ') } : null)),
       h('div', { class: 'meta', text: [
         top.modelConfidence ? 'Model confidence: ' + top.modelConfidence : null,
         catalogQuality ? 'Catalog check: ' + catalogQuality : null,
@@ -192,9 +260,9 @@ p{margin:0 0 10px;color:#3A4050}
     if (matches.length > 1) {
       parts.push(h('div', { class: 'sec', text: 'Also possible' }));
       matches.slice(1).forEach((m) => {
-        const im = posterEl('');
-        loadImage(m.poster).then((u) => u && (im.src = u));
-        parts.push(h('div', { class: 'alt' }, im, h('div', {}, h('b', { text: m.title }),
+        const alt = artworkFigure('Official poster', 'poster-art');
+        loadArtwork(alt, artworkSources(m), loadImage);
+        parts.push(h('div', { class: 'alt' }, alt.element, h('div', {}, h('b', { text: m.title }),
           h('span', { text: [m.mediaType === 'tv' ? 'TV show' : 'Movie', m.releaseYear, LEVEL[m.matchLevel]].filter(Boolean).join(', ') }),
           h('div', {}, h('a', { class: 'meta', href: m.tmdbUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Details' })))));
       });
@@ -207,6 +275,23 @@ p{margin:0 0 10px;color:#3A4050}
       onAnalyzeMore ? h('button', { class: 'a', text: 'Analyze more of this video', onclick: onAnalyzeMore }) : null,
       h('button', { class: 'a', text: 'Try again', onclick: onRetry })));
     open(h('div', {}, header(status === 'possible_match' ? 'Possible match' : 'Identification result'), h('div', { class: 'body' }, parts)));
+    const heroSources = artworkSources(top, sceneFrame);
+    loadArtwork(hero, heroSources, loadImage).then((kind) => {
+      if (kind === 'backdrop' && isTmdbImageUrl(top.poster)) {
+        loadArtwork(poster, artworkSources({ poster: top.poster }), loadImage);
+      } else {
+        poster.element.remove();
+      }
+      if (sceneFrame?.dataUrl && kind !== 'scene') {
+        const sceneSources = artworkSources({}, sceneFrame).map((source) => ({
+          ...source,
+          label: `Scene analyzed${Number.isFinite(sceneFrame.timestamp) ? ` · ${sceneFrame.timestamp.toFixed(1)}s` : ''}`,
+        }));
+        loadArtwork(scene, sceneSources, loadImage);
+      } else {
+        scene.element.remove();
+      }
+    });
   }
 
   function showMusic(track, { onRetry }) {
@@ -226,5 +311,6 @@ p{margin:0 0 10px;color:#3A4050}
     onClose: (cb) => (onCloseCb = cb),
     hideForCapture: (on) => { if (host) host.style.visibility = on ? 'hidden' : 'visible'; },
     reopenMenu: () => { closeAll(); toggleMenu(); },
+    artworkSources,
   };
 })();
