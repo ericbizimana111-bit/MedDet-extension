@@ -87,8 +87,13 @@ function requestHttps(url, {
       };
       signal.addEventListener('abort', onAbort, { once: true });
     }
-    if (body !== undefined) req.write(body);
-    req.end();
+    try {
+      if (body !== undefined) req.write(body);
+      req.end();
+    } catch (error) {
+      finish(error);
+      req.destroy(error);
+    }
   });
 }
 

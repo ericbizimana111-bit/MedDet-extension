@@ -37,6 +37,7 @@ p{margin:0 0 10px;color:#3A4050}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:650;margin-bottom:6px}
 .high{background:#CDEFE7;color:#0B5F56}.possible{background:#F6E7B8;color:#6B4E00}.low{background:#EBD0CC;color:#7A2A20}
 .ov{font-size:13px;color:#3A4050;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;margin:0 0 8px}
+.evidence{font-size:12px;color:#3A4050;margin:8px 0}.evidence b{display:block;margin-bottom:3px}.evidence ul{margin:0;padding-left:18px}
 .alt{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid #DAD8CF}
 .alt img{width:34px;height:51px;border-radius:5px;object-fit:cover;background:#DAD8CF}
 .alt div b{display:block;font-size:13px}.alt div span{font-size:12px;color:#5A6070}
@@ -155,18 +156,38 @@ p{margin:0 0 10px;color:#3A4050}
 
   function showMovie(matches, loadImage, { onRetry, onAnalyzeMore, status }) {
     const top = matches[0];
+    const ambiguousStrongMatch = status === 'possible_match' && top.matchLevel === 'high';
     const poster = posterEl('poster');
     loadImage(top.poster).then((u) => u && (poster.src = u));
     const kind = top.mediaType === 'tv' ? 'TV show' : 'Movie';
     const meta = [kind, top.releaseYear, top.runtime ? top.runtime + ' min' : null, top.rating ? '★ ' + top.rating : null].filter(Boolean).join(', ');
+    const catalogQuality = {
+      exact_title_and_year: 'exact title and year',
+      exact_title_year_close: 'exact title, close year',
+      exact_title_year_unknown: 'exact title, year unknown',
+      partial_title: 'similar title only',
+    }[top.catalogMatchQuality];
+    const evidenceLabel = top.evidenceQuality === 'multiple_clues' ? 'multiple visual clues' : 'limited visual clues';
     const parts = [
       h('div', { class: 'row' }, poster, h('div', {},
-        h('span', { class: 'badge ' + top.matchLevel, text: LEVEL[top.matchLevel] || 'Possible match' }),
+        h('span', {
+          class: 'badge ' + (ambiguousStrongMatch ? 'possible' : top.matchLevel),
+          text: ambiguousStrongMatch ? 'Possible match (ambiguous)' : LEVEL[top.matchLevel] || 'Possible match',
+        }),
         h('h3', { text: top.title }), h('div', { class: 'meta', text: meta }),
         top.genres?.length ? h('div', { class: 'meta', text: top.genres.slice(0, 3).join(', ') }) : null)),
+      h('div', { class: 'meta', text: [
+        top.modelConfidence ? 'Model confidence: ' + top.modelConfidence : null,
+        catalogQuality ? 'Catalog check: ' + catalogQuality : null,
+        'Visual evidence: ' + evidenceLabel,
+      ].filter(Boolean).join(' · ') }),
       top.overview ? h('p', { class: 'ov', text: top.overview }) : null,
       top.director?.length ? h('div', { class: 'meta', text: (top.mediaType === 'tv' ? 'Created by ' : 'Directed by ') + top.director.join(', ') }) : null,
       top.cast?.length ? h('div', { class: 'meta', text: 'Cast: ' + top.cast.slice(0, 4).join(', ') }) : null,
+      top.sceneDescription ? h('p', { class: 'ov', text: top.sceneDescription }) : null,
+      top.evidence?.length ? h('div', { class: 'evidence' }, h('b', { text: 'Visual clues' }),
+        h('ul', {}, top.evidence.map((entry) => h('li', { text: entry })))) : null,
+      top.actorsOrCharacters?.length ? h('div', { class: 'meta', text: 'Possible actors or characters: ' + top.actorsOrCharacters.join(', ') }) : null,
     ];
     if (matches.length > 1) {
       parts.push(h('div', { class: 'sec', text: 'Also possible' }));

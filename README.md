@@ -36,12 +36,18 @@ curl http://localhost:5000/api/v1/health
 
 ## How it works
 
-- **Movie/TV:** captures up to 4 frames from the playing video (drops near-duplicates), sends them to   the backend. Gemini proposes candidates, every candidate is verified in TMDB (title + year + media type),
-  ranked, and shown as Strong / Possible / Weak match. Unverified guesses are never shown.
+- **Movie/TV:** captures up to 6 distinct frames over about 5 seconds of playback (or one frame if paused),
+  preserves timestamps and drops near-duplicates. Gemini assesses the frames together and TMDB verifies
+  candidate titles. If evidence is insufficient or only a possible match is found, the user may request
+  one additional analysis of up to 6 new frames. No more than 2 Gemini analyses are made per session.
+  Strong, possible and weak labels are evidence categories, not calibrated probabilities.
 - **Music:** records ~12 seconds of the video's own audio, converts to 8 kHz mono WAV in the browser,
   backend sends it to ACRCloud. Silence, paused or muted video gives a clear message, not a fake result.
 - **Frame capture** reads the video directly. If the site blocks that (cross-origin), it falls back to a
   tab screenshot cropped to the video. Protected (DRM) or black video is reported, never bypassed.
+- **Movie-analysis sessions** are held in backend memory for up to 15 minutes. Only candidate metadata and
+  frame hashes are retained server-side; the extension resends the first-pass frames for a requested second
+  pass. Sessions are process-local, like the existing in-memory daily budget and rate limits.
 
 ## Cost protection
 
@@ -53,15 +59,19 @@ before scaling out. The Express proxy setting assumes exactly one trusted revers
 
 ## Backend request formats
 
-- `POST /api/v1/identify/movie`: JSON body `{ "frames": [{ "image": "<base64 JPEG/PNG/WebP>", "timestamp": 1.2 }], "platform": "youtube" }`.
-  `frames` is required (1–6 images); `image` may also be a matching `data:image/...;base64,` URL.
+- `POST /api/v1/identify/movie`: the initial request accepts `{ "frames": [{ "image": "<base64 JPEG/PNG/WebP>", "timestamp": 1.2 }], "platform": "youtube" }`
+  (1–6 images; `image` may also be a matching `data:image/...;base64,` URL). A requested second pass
+  uses `pass: "additional"`, the returned `sessionId`, up to 6 new `frames`, and up to 6 matching
+  `priorFrames` from the first pass. Frame count, session, and request-size limits are validated.
 - `POST /api/v1/identify/music`: JSON body `{ "audio": "<base64 audio>", "mimeType": "audio/wav", "platform": "youtube" }`.
   Music identification returns `ACR_NOT_CONFIGURED` until all three ACRCloud values are set.
 - `GET /api/v1/health`: reports server status and whether the required service credentials are configured.
   A true service flag indicates configuration only, not a live upstream connectivity check.
 
-The Gemini, TMDB, and ACRCloud integrations use IPv4-selected HTTPS requests with bounded timeouts.
-Automated tests mock the paid upstream services; passing them does not establish live API availability.
+The Gemini, TMDB, and ACRCloud integrations use IPv4-selected HTTPS requests with bounded socket and
+overall deadlines. Closing/cancelling an identification cancels its upstream requests. Automated tests
+mock paid upstream services; passing them does not establish live API availability or identification
+accuracy. Movie matching confidence has not been calibrated against a labeled scene dataset.
 
 ## Known limits (honest list)
 

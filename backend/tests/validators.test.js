@@ -28,6 +28,32 @@ test('movie request accepts a matching image data URL MIME type', () => {
   assert.equal(parsed.frames[0].image, image);
 });
 
+test('movie request validates initial and additional-pass frame contracts', () => {
+  const sessionId = Buffer.alloc(32, 1).toString('base64url');
+  const initial = movieSchema.parse({
+    frames: [{ image, timestamp: 2 }],
+    videoContext: { currentTime: 3, duration: 10, width: 720, height: 1280, paused: false },
+  });
+  assert.equal(initial.pass, 'initial');
+  assert.equal(initial.videoContext.height, 1280);
+
+  const additional = movieSchema.parse({
+    pass: 'additional',
+    sessionId,
+    priorFrames: [{ image, timestamp: 2 }],
+    frames: [{ image, timestamp: 8 }],
+  });
+  assert.equal(additional.pass, 'additional');
+  assert.equal(additional.priorFrames.length, 1);
+  assert.equal(movieSchema.safeParse({
+    pass: 'additional',
+    sessionId: 'client-invented',
+    priorFrames: [{ image }],
+    frames: [{ image }],
+  }).success, false);
+  assert.equal(movieSchema.safeParse({ pass: 'initial', sessionId, frames: [{ image }] }).success, false);
+});
+
 test('music request validates required audio and its declared MIME type', () => {
   assert.equal(musicSchema.safeParse({}).success, false);
   assert.equal(musicSchema.safeParse({

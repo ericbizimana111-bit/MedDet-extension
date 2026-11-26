@@ -6,19 +6,19 @@ const httpsRequest = require('../utils/httpsRequest');
 
 const candidateSchema = z.object({
   title: z.string().min(1).max(200),
-  releaseYear: z.number().int().min(1888).max(2100).nullish(),
-  mediaType: z.enum(['movie', 'tv']).default('movie'),
-  evidence: z.array(z.string().max(300)).max(6).default([]),
-  actorsOrCharacters: z.array(z.string().max(120)).max(6).default([]),
-  sceneDescription: z.string().max(500).optional(),
-  confidence: z.enum(['high', 'medium', 'low']).default('low'),
-});
+  releaseYear: z.number().int().min(1888).max(2100).nullable(),
+  mediaType: z.enum(['movie', 'tv']),
+  evidence: z.array(z.string().min(1).max(300)).min(1).max(6),
+  actorsOrCharacters: z.array(z.string().min(1).max(120)).max(6),
+  sceneDescription: z.string().max(500),
+  confidence: z.enum(['high', 'medium', 'low']),
+}).strict();
 
 const resultSchema = z.object({
   candidates: z.array(candidateSchema).max(3),
   requiresMoreEvidence: z.boolean(),
-  uncertaintyReason: z.string().max(300).optional(),
-});
+  uncertaintyReason: z.string().max(300),
+}).strict();
 
 const responseSchema = z.object({
   candidates: z.array(z.object({
@@ -76,7 +76,7 @@ function parseGeminiResponse(body) {
   return parsedResult.data;
 }
 
-async function identifyScene(frames, { priorCandidates = [], signal, deadlineAt } = {}) {
+async function identifyScene(frames, { priorCandidates = [], platform, videoContext, signal, deadlineAt } = {}) {
   if (!env.gemini.apiKey) {
     throw new AppError(
       503,
@@ -86,6 +86,16 @@ async function identifyScene(frames, { priorCandidates = [], signal, deadlineAt 
   }
 
   const parts = [{ text: PROMPT }];
+  const clipMetadata = Object.fromEntries(Object.entries({
+    platform,
+    currentTime: videoContext?.currentTime,
+    duration: videoContext?.duration,
+    width: videoContext?.width,
+    height: videoContext?.height,
+  }).filter(([, value]) => value !== undefined));
+  if (Object.keys(clipMetadata).length) {
+    parts.push({ text: `Clip metadata (context only; do not infer a title from the platform): ${JSON.stringify(clipMetadata)}` });
+  }
   if (priorCandidates.length) {
     parts.push({ text: `Prior unconfirmed candidates for reassessment (not trusted conclusions): ${JSON.stringify(priorCandidates)}` });
   }

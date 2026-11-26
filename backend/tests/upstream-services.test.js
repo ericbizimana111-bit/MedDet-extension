@@ -29,6 +29,44 @@ test('TMDB reports upstream HTTP, network, and malformed JSON errors cleanly', a
   await assert.rejects(tmdb.verifyCandidate({ title: 'Example', mediaType: 'movie' }), (error) => error.code === 'METADATA_UNAVAILABLE');
 });
 
+test('TMDB verifies media type and year, then checks bounded alternative titles when needed', async (t) => {
+  const originalRequest = httpsRequest.requestHttps;
+  const originalKey = env.tmdb.apiKey;
+  env.tmdb.apiKey = 'test-key';
+  const calls = [];
+  httpsRequest.requestHttps = async (url) => {
+    const parsed = new URL(url);
+    calls.push(parsed);
+    if (parsed.pathname === '/3/search/tv') {
+      assert.equal(parsed.searchParams.get('first_air_date_year'), '2020');
+      return { status: 200, body: JSON.stringify({ results: [{ id: 8, name: 'Example Series', first_air_date: '2020-01-02' }] }) };
+    }
+    if (parsed.pathname === '/3/search/movie') {
+      return { status: 200, body: JSON.stringify({ results: [{ id: 9, title: 'Original Film', release_date: '2010-01-02' }] }) };
+    }
+    if (parsed.pathname === '/3/movie/9/alternative_titles') {
+      return { status: 200, body: JSON.stringify({ titles: [{ title: 'Local Film Title' }] }) };
+    }
+    throw new Error(`Unexpected TMDB path ${parsed.pathname}`);
+  };
+  t.after(() => {
+    httpsRequest.requestHttps = originalRequest;
+    env.tmdb.apiKey = originalKey;
+  });
+
+  const tv = await tmdb.verifyCandidate({ title: 'Example Series', releaseYear: 2020, mediaType: 'tv' });
+  assert.equal(tv.type, 'tv');
+  assert.equal(tv.titleMatch, 'exact');
+  assert.equal(tv.yearMatch, 'same');
+
+  const movie = await tmdb.verifyCandidate({ title: 'Local Film Title', releaseYear: 2010, mediaType: 'movie' });
+  assert.equal(movie.type, 'movie');
+  assert.equal(movie.matchedByAlternativeTitle, true);
+  assert.equal(movie.titleMatch, 'exact');
+  assert.equal(movie.yearMatch, 'same');
+  assert.equal(calls.filter((url) => url.pathname === '/3/search/movie').length, 2);
+});
+
 test('ACRCloud signs and posts multipart audio through the IPv4 HTTPS client', async (t) => {
   const originalRequest = httpsRequest.requestHttps;
   const originalAcr = { ...env.acr };

@@ -69,10 +69,18 @@
     AI_BUSY: ['Analysis temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
     AI_QUOTA: ['Analysis temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
     AI_UNAVAILABLE: ['Analysis temporarily unavailable', 'The analysis service could not be reached. Please try again later.'],
+    AI_REJECTED: ['Analysis configuration issue', 'The analysis service rejected the request. Please contact the MedDet server administrator.'],
     AI_INVALID_RESPONSE: ['Analysis could not be completed', 'The analysis service returned an invalid result. Please try again later.'],
+    GEMINI_NOT_CONFIGURED: ['Movie analysis is not configured', 'The MedDet server administrator needs to configure the analysis service.'],
     METADATA_BUSY: ['Movie lookup temporarily unavailable', 'The movie database is busy. Please try again shortly.'],
     METADATA_UNAVAILABLE: ['Movie lookup temporarily unavailable', 'The movie database could not be reached. Please try again later.'],
+    METADATA_TIMEOUT: ['Movie lookup timed out', 'The movie database took too long to respond. Please try again.'],
+    METADATA_INVALID_RESPONSE: ['Movie lookup could not be completed', 'The movie database returned an invalid result. Please try again later.'],
+    TMDB_NOT_CONFIGURED: ['Movie lookup is not configured', 'The MedDet server administrator needs to configure the movie database.'],
+    TMDB_REJECTED: ['Movie lookup configuration issue', 'The movie database rejected the server credentials. Please contact the MedDet server administrator.'],
     SESSION_EXPIRED: ['Analysis session expired', 'Start a new identification to analyze this video again.'],
+    SESSION_COMPLETE: ['Analysis already completed', 'Start a new identification to analyze this video again.'],
+    SESSION_FRAME_MISMATCH: ['Analysis could not continue', 'The previous visual evidence did not match this session. Start a new identification.'],
     RATE_LIMITED: ['Free limit reached', 'You have used the free identifications available for now. Try again in a while.'],
     DAILY_CAPACITY: ['MedDet is full for today', 'The free daily capacity has been used. Please try again tomorrow.'],
     PROTECTED: ['This video can’t be analysed', 'It looks protected or blank, and MedDet does not bypass protections.'],
@@ -141,13 +149,25 @@
               frames: requestFrames(frames),
               priorFrames: requestFrames(priorFrames),
               platform: platform.name,
-              videoContext: { currentTime: video.currentTime },
+              videoContext: {
+                currentTime: video.currentTime,
+                duration: Number.isFinite(video.duration) ? video.duration : undefined,
+                width: video.videoWidth || undefined,
+                height: video.videoHeight || undefined,
+                paused: video.paused,
+              },
             }
           : {
               pass,
               frames: requestFrames(frames),
               platform: platform.name,
-              videoContext: { currentTime: video.currentTime },
+              videoContext: {
+                currentTime: video.currentTime,
+                duration: Number.isFinite(video.duration) ? video.duration : undefined,
+                width: video.videoWidth || undefined,
+                height: video.videoHeight || undefined,
+                paused: video.paused,
+              },
             };
         res = await sendMsg({ type: 'IDENTIFY', kind: 'movie', body, requestId });
         if (activeRequestId === requestId) activeRequestId = null;
@@ -160,7 +180,7 @@
           const next = d.sessionId ? () => run('movie', { sessionId: d.sessionId, frames: [...priorFrames, ...frames] }) : null;
           return ui.showMessage({
             title: 'More visual evidence needed',
-            body: d.message || 'MedDet could not identify the production confidently from these moments.',
+            body: [d.message, d.uncertaintyReason].filter(Boolean).join(' '),
             actionLabel: next ? 'Analyze more of this video' : 'Try again',
             onAction: next || retry,
             secondaryActionLabel: next ? 'Try another video' : undefined,
@@ -168,7 +188,12 @@
           });
         }
         if (d.status === 'no_match') {
-          return ui.showMessage({ title: 'No match found', body: d.message, actionLabel: 'Try again', onAction: retry });
+          return ui.showMessage({
+            title: 'No match found',
+            body: [d.message, d.uncertaintyReason].filter(Boolean).join(' '),
+            actionLabel: 'Try again',
+            onAction: retry,
+          });
         }
         if (d.status === 'possible_match') {
           const next = d.sessionId ? () => run('movie', { sessionId: d.sessionId, frames: [...priorFrames, ...frames] }) : null;

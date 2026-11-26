@@ -16,6 +16,7 @@ const validModelResult = {
     confidence: 'medium',
   }],
   requiresMoreEvidence: false,
+  uncertaintyReason: '',
 };
 
 function geminiEnvelope(text) {
@@ -52,6 +53,14 @@ test('malformed Gemini envelopes and model output are explicit invalid-response 
   assert.throws(() => parseGeminiResponse(geminiEnvelope('not json')), (error) => error.code === 'AI_INVALID_RESPONSE');
   assert.throws(() => parseGeminiResponse(geminiEnvelope(JSON.stringify({ candidates: [{ title: 7 }] }))), (error) => error.code === 'AI_INVALID_RESPONSE');
   assert.throws(() => parseGeminiResponse(geminiEnvelope('')), (error) => error.code === 'AI_INVALID_RESPONSE');
+  assert.throws(() => parseGeminiResponse(geminiEnvelope(JSON.stringify({
+    ...validModelResult,
+    candidates: [{ ...validModelResult.candidates[0], mediaType: 'documentary' }],
+  }))), (error) => error.code === 'AI_INVALID_RESPONSE');
+  assert.throws(() => parseGeminiResponse(geminiEnvelope(JSON.stringify({
+    ...validModelResult,
+    candidates: [{ ...validModelResult.candidates[0], unsupportedClaim: 'invented' }],
+  }))), (error) => error.code === 'AI_INVALID_RESPONSE');
 });
 
 test('Gemini maps rejected, quota, busy, and unexpected upstream statuses safely', async (t) => {
@@ -100,9 +109,10 @@ test('Gemini sends time-ordered inline images and prior candidates for reassessm
   httpsRequest.requestHttps = async (_url, options) => {
     const body = JSON.parse(options.body);
     assert.match(body.contents[0].parts[0].text, /Ignore TikTok, Instagram and YouTube/);
-    assert.match(body.contents[0].parts[1].text, /Prior unconfirmed candidates/);
-    assert.equal(body.contents[0].parts[3].inlineData.data, 'first');
-    assert.equal(body.contents[0].parts[5].inlineData.data, 'second');
+    assert.match(body.contents[0].parts[1].text, /platform":"instagram/);
+    assert.match(body.contents[0].parts[2].text, /Prior unconfirmed candidates/);
+    assert.equal(body.contents[0].parts[4].inlineData.data, 'first');
+    assert.equal(body.contents[0].parts[6].inlineData.data, 'second');
     assert.equal(body.generationConfig.responseMimeType, 'application/json');
     return { status: 200, body: geminiEnvelope(JSON.stringify(validModelResult)) };
   };
@@ -114,5 +124,9 @@ test('Gemini sends time-ordered inline images and prior candidates for reassessm
   await identifyScene([
     { image: 'first', timestamp: 1, mimeType: 'image/jpeg' },
     { image: 'second', timestamp: 2, mimeType: 'image/jpeg' },
-  ], { priorCandidates: [validModelResult.candidates[0]] });
+  ], {
+    priorCandidates: [validModelResult.candidates[0]],
+    platform: 'instagram',
+    videoContext: { currentTime: 3, duration: 12, width: 720, height: 1280 },
+  });
 });

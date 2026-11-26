@@ -191,6 +191,39 @@ test('movie analysis does not issue a second attempt automatically after an upst
   assert.equal(calls, 1);
 });
 
+test('disconnecting the browser request aborts the backend identification signal', async (t) => {
+  const base = await startServer(t);
+  const original = identification.identifyMovie;
+  await movieLimiter.resetKey('127.0.0.1');
+  let markStarted;
+  let markAborted;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const aborted = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('backend request was not aborted')), 2000);
+    markAborted = () => { clearTimeout(timer); resolve(); };
+  });
+  identification.identifyMovie = ({ signal }) => new Promise((_resolve, reject) => {
+    markStarted();
+    signal.addEventListener('abort', () => {
+      markAborted();
+      reject(Object.assign(new Error('request cancelled'), { code: 'REQUEST_CANCELLED', status: 499 }));
+    }, { once: true });
+  });
+  t.after(() => { identification.identifyMovie = original; });
+
+  const controller = new AbortController();
+  const request = fetch(`${base}/api/v1/identify/movie`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ frames: [{ image }] }),
+    signal: controller.signal,
+  }).catch(() => null);
+  await started;
+  controller.abort();
+  await aborted;
+  await request;
+});
+
 test('music endpoint accepts validated audio but reports missing ACRCloud configuration', async (t) => {
   const base = await startServer(t);
   if (serviceStatus().music) {

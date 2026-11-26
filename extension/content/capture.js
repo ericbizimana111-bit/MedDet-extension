@@ -81,6 +81,7 @@
   async function captureFrames(video, { count = 6, intervalMs = 1000, onProgress, token, excludeFrames = [] } = {}) {
     const frames = [], hashes = excludeFrames.map((f) => f.hash).filter(Boolean), state = { method: null };
     const target = video.paused ? 1 : Math.min(count, 6);
+    let previousSampleHash = null;
     for (let i = 0; i < target; i++) {
       if (token?.cancelled) throw new CaptureError('CANCELLED', 'Cancelled.');
       if (!video.isConnected || (i > 0 && (video.paused || video.ended))) break;
@@ -93,6 +94,8 @@
         throw e;
       }
       const h = dHash(c).bits;
+      const visualChange = previousSampleHash ? hamming(previousSampleHash, h) : 64;
+      previousSampleHash = h;
       if (!hashes.some((x) => hamming(x, h) < 5)) {
         hashes.push(h);
         frames.push({
@@ -102,7 +105,8 @@
         });
       }
       c.width = 0; c.height = 0;
-      if (i < target - 1) await sleep(intervalMs);
+      // Allow a little more playback after a major visual change before sampling again.
+      if (i < target - 1) await sleep(Math.round(intervalMs * (visualChange >= 20 ? 1.1 : 1)));
     }
     if (!frames.length && !excludeFrames.length) {
       throw new CaptureError('NO_FRAMES', 'No usable video frames could be captured.');

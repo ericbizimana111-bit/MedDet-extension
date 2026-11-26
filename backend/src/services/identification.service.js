@@ -57,15 +57,30 @@ function catalogMatchQuality(verification) {
   return 'exact_title_year_unknown';
 }
 
+function combineSignals(signals) {
+  const controller = new AbortController();
+  const listeners = [];
+  for (const signal of signals.filter(Boolean)) {
+    const abort = () => controller.abort(signal.reason);
+    if (signal.aborted) abort();
+    else {
+      signal.addEventListener('abort', abort, { once: true });
+      listeners.push(() => signal.removeEventListener('abort', abort));
+    }
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => listeners.forEach((remove) => remove()),
+  };
+}
+
 async function rankCandidates(candidates, { signal, deadlineAt }) {
   const groupController = new AbortController();
-  const requestSignal = signal
-    ? AbortSignal.any([signal, groupController.signal])
-    : groupController.signal;
+  const linked = combineSignals([signal, groupController.signal]);
   try {
     const verified = await Promise.all(candidates.slice(0, 3).map(async (candidate) => {
       try {
-        const verification = await tmdb.verifyCandidate(candidate, { signal: requestSignal, deadlineAt });
+        const verification = await tmdb.verifyCandidate(candidate, { signal: linked.signal, deadlineAt });
         return verification ? { candidate, verification } : null;
       } catch (error) {
         groupController.abort(error);
@@ -91,7 +106,7 @@ async function rankCandidates(candidates, { signal, deadlineAt }) {
 
     const matches = await Promise.all(ranked.map(async ({ candidate, verification, level }) => {
       try {
-        const details = await tmdb.getDetails(verification.type, verification.id, { signal: requestSignal, deadlineAt });
+        const details = await tmdb.getDetails(verification.type, verification.id, { signal: linked.signal, deadlineAt });
         return {
           ...details,
           matchLevel: level,
@@ -111,6 +126,8 @@ async function rankCandidates(candidates, { signal, deadlineAt }) {
   } catch (error) {
     if (!groupController.signal.aborted) groupController.abort(error);
     throw error;
+  } finally {
+    linked.dispose();
   }
 }
 
@@ -125,9 +142,9 @@ function insufficientEvidence(candidates, uncertaintyReason, sessionId) {
   };
 }
 
-async function identifyInitial({ frames, signal, deadlineAt }) {
+async function identifyInitial({ frames, platform, videoContext, signal, deadlineAt }) {
   const prepared = prepareFrames(frames);
-  const ai = await gemini.identifyScene(prepared, { signal, deadlineAt });
+  const ai = await gemini.identifyScene(prepared, { platform, videoContext, signal, deadlineAt });
 
   if (ai.requiresMoreEvidence) {
     const sessionId = createSession(ai.candidates, prepared);
@@ -137,6 +154,7 @@ async function identifyInitial({ frames, signal, deadlineAt }) {
     return {
       status: 'no_match',
       matches: [],
+      uncertaintyReason: ai.uncertaintyReason,
       message: 'The available frames were analyzed, but they did not support a credible movie or TV match.',
     };
   }
@@ -146,6 +164,8 @@ async function identifyInitial({ frames, signal, deadlineAt }) {
     return {
       status: 'no_match',
       matches: [],
+      candidates: ai.candidates,
+      uncertaintyReason: ai.uncertaintyReason,
       message: 'MedDet found possible titles, but none could be verified reliably in the movie database.',
     };
   }
@@ -165,7 +185,7 @@ async function identifyInitial({ frames, signal, deadlineAt }) {
   };
 }
 
-async function identifyAdditional({ frames, priorFrames, sessionId, signal, deadlineAt }) {
+async function identifyAdditional({ frames, priorFrames, sessionId, platform, videoContext, signal, deadlineAt }) {
   const session = getSession(sessionId);
   const prior = prepareFrames(priorFrames);
   if (prior.some((frame) => !session.frameHashes.has(frame.hash))) {
@@ -189,6 +209,8 @@ async function identifyAdditional({ frames, priorFrames, sessionId, signal, dead
     .slice(0, 12);
   const ai = await gemini.identifyScene(combined, {
     priorCandidates: session.candidates,
+    platform,
+    videoContext,
     signal,
     deadlineAt,
   });
@@ -201,6 +223,7 @@ async function identifyAdditional({ frames, priorFrames, sessionId, signal, dead
       status: 'no_match',
       matches: [],
       candidates: [],
+      uncertaintyReason: ai.uncertaintyReason,
       message: 'The additional frames were analyzed, but they did not support a credible movie or TV match.',
     };
   }
@@ -211,6 +234,7 @@ async function identifyAdditional({ frames, priorFrames, sessionId, signal, dead
       status: 'no_match',
       matches: [],
       candidates: ai.candidates,
+      uncertaintyReason: ai.uncertaintyReason,
       message: 'The additional analysis produced possible titles, but none could be verified reliably in the movie database.',
     };
   }

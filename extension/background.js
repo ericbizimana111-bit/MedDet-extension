@@ -12,12 +12,12 @@ async function backendUrl() {
 const fail = (code, message) => ({ success: false, error: { code, message } });
 
 async function identify(kind, body, requestId) {
-  const base = await backendUrl();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new DOMException('Identification timed out', 'TimeoutError')), 60_000);
   if (requestId) activeIdentifications.set(requestId, controller);
   let res;
   try {
+    const base = await backendUrl();
     res = await fetch(`${base}/api/v1/identify/${kind}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
