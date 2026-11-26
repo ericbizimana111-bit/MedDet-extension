@@ -5,6 +5,12 @@ const httpsRequest = require('../utils/httpsRequest');
 
 const BASE = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p';
+const IMAGE_PATH = /^\/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp)$/i;
+
+function tmdbImage(path, size) {
+  if (typeof path !== 'string' || !IMAGE_PATH.test(path)) return null;
+  return `${IMG}/${size}/${encodeURIComponent(path.slice(1))}`;
+}
 
 async function tmdb(path, params = {}, { signal, deadlineAt } = {}) {
   if (!env.tmdb.apiKey) throw new AppError(503, 'TMDB_NOT_CONFIGURED', 'Movie lookup is not configured on the server (missing TMDB_API_KEY).');
@@ -111,7 +117,8 @@ async function getDetails(type, id, { signal, deadlineAt } = {}) {
     title: d.title || d.name,
     releaseYear: parseInt(String(d.release_date || d.first_air_date || '').slice(0, 4), 10) || null,
     overview: d.overview || '',
-    poster: d.poster_path ? `${IMG}/w342${d.poster_path}` : null,
+    poster: tmdbImage(d.poster_path, 'w342'),
+    backdrop: tmdbImage(d.backdrop_path, 'w780'),
     genres: (d.genres || []).map((g) => g.name),
     runtime: d.runtime || (d.episode_run_time && d.episode_run_time[0]) || null,
     seasons: type === 'tv' ? d.number_of_seasons || null : null,
@@ -122,4 +129,4 @@ async function getDetails(type, id, { signal, deadlineAt } = {}) {
   };
 }
 
-module.exports = { verifyCandidate, getDetails };
+module.exports = { verifyCandidate, getDetails, tmdbImage };
