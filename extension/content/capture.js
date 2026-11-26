@@ -8,7 +8,8 @@
   }
 
   // ---------- frames ----------
-  const MAX_W = 720;
+  const MAX_W = 960;
+  const MAX_FRAME_DATA_URL_LENGTH = 850_000;
 
   function drawVideo(video) {
     if (video.readyState < 2 || !video.videoWidth) throw new CaptureError('NOT_READY', 'The video has not loaded yet.');
@@ -60,6 +61,30 @@
   }
   const hamming = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) n++; return n; };
 
+  function encodeFrame(canvas) {
+    let source = canvas;
+    let quality = 0.84;
+    let dataUrl = source.toDataURL('image/jpeg', quality);
+    while (dataUrl.length > MAX_FRAME_DATA_URL_LENGTH && quality > 0.62) {
+      quality = Math.max(0.62, quality - 0.08);
+      dataUrl = source.toDataURL('image/jpeg', quality);
+    }
+    while (dataUrl.length > MAX_FRAME_DATA_URL_LENGTH && source.width > 320) {
+      const scale = Math.max(0.75, 320 / source.width);
+      const smaller = document.createElement('canvas');
+      smaller.width = Math.round(source.width * scale);
+      smaller.height = Math.round(source.height * scale);
+      smaller.getContext('2d').drawImage(source, 0, 0, smaller.width, smaller.height);
+      source = smaller;
+      quality = 0.72;
+      dataUrl = source.toDataURL('image/jpeg', quality);
+    }
+    if (dataUrl.length > MAX_FRAME_DATA_URL_LENGTH) {
+      throw new CaptureError('FRAME_TOO_LARGE', 'This video frame could not be compressed enough to analyze.');
+    }
+    return dataUrl.split(',')[1];
+  }
+
   async function grab(video, state) {
     if (state.method !== 'tab') {
       try {
@@ -99,14 +124,14 @@
       if (!hashes.some((x) => hamming(x, h) < 5)) {
         hashes.push(h);
         frames.push({
-          image: c.toDataURL('image/jpeg', 0.72).split(',')[1],
+          image: encodeFrame(c),
           timestamp: Math.round(video.currentTime * 10) / 10,
           hash: h,
         });
       }
       c.width = 0; c.height = 0;
-      // Allow a little more playback after a major visual change before sampling again.
-      if (i < target - 1) await sleep(Math.round(intervalMs * (visualChange >= 20 ? 1.1 : 1)));
+      // Sample again sooner after a cut so short-lived montage footage is less likely to be skipped.
+      if (i < target - 1) await sleep(visualChange >= 20 ? Math.min(350, intervalMs) : intervalMs);
     }
     if (!frames.length && !excludeFrames.length) {
       throw new CaptureError('NO_FRAMES', 'No usable video frames could be captured.');

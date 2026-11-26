@@ -28,6 +28,19 @@ test('health endpoint reports server status and configured service readiness', a
   for (const key of ['movie', 'music', 'gemini', 'tmdb', 'acrcloud']) assert.equal(typeof body.data.services[key], 'boolean');
 });
 
+test('movie feature readiness does not depend on optional TMDB credentials', () => {
+  const originalGeminiKey = env.gemini.apiKey;
+  const originalTmdbKey = env.tmdb.apiKey;
+  env.gemini.apiKey = 'test-key';
+  env.tmdb.apiKey = '';
+  try {
+    assert.equal(serviceStatus().movie, true);
+  } finally {
+    env.gemini.apiKey = originalGeminiKey;
+    env.tmdb.apiKey = originalTmdbKey;
+  }
+});
+
 test('movie endpoint rejects missing, malformed, and unsupported image input before services', async (t) => {
   const base = await startServer(t);
   const original = identification.identifyMovie;
@@ -127,6 +140,9 @@ test('movie workflow requests more evidence before TMDB and permits only one use
       };
     }
     assert.equal(frames.length, 2);
+    assert.notEqual(frames[0].image, frames[1].image);
+    assert.equal(frames[0].timestamp, 1);
+    assert.equal(frames[1].timestamp, 2);
     assert.equal(options.priorCandidates[0].title, 'Example');
     return {
       candidates: [{
@@ -172,6 +188,125 @@ test('movie workflow requests more evidence before TMDB and permits only one use
     frames: [secondFrame],
   }), (error) => error.code === 'SESSION_COMPLETE');
   assert.equal(geminiCalls, 2);
+});
+
+test('TMDB timeout preserves and returns a valid AI identification', async (t) => {
+  const originalGemini = gemini.identifyScene;
+  const originalVerify = tmdb.verifyCandidate;
+  const originalWarn = console.warn;
+  gemini.identifyScene = async () => ({
+    candidates: [{
+      title: 'Example',
+      releaseYear: 2020,
+      mediaType: 'movie',
+      confidence: 'medium',
+      evidence: ['A red car is visible'],
+      actorsOrCharacters: [],
+      sceneDescription: 'A red car drives along a road.',
+      timestamps: [4.5],
+    }],
+    requiresMoreEvidence: false,
+    uncertaintyReason: '',
+  });
+  tmdb.verifyCandidate = async () => {
+    throw Object.assign(new Error('private upstream details'), { code: 'METADATA_TIMEOUT' });
+  };
+  console.warn = () => {};
+  t.after(() => {
+    gemini.identifyScene = originalGemini;
+    tmdb.verifyCandidate = originalVerify;
+    console.warn = originalWarn;
+  });
+
+  const result = await identification.identifyMovie({ frames: [{ image, timestamp: 4.5 }] });
+  assert.equal(result.status, 'possible_match');
+  assert.equal(result.metadataUnavailable, true);
+  assert.match(result.message, /TMDB metadata is temporarily unavailable/);
+  assert.equal(result.matches[0].title, 'Example');
+  assert.equal(result.matches[0].metadataUnavailable, true);
+  assert.deepEqual(result.matches[0].timestamps, [4.5]);
+});
+
+test('mixed-production montage returns separate verified candidates and their frame timestamps', async (t) => {
+  const originalGemini = gemini.identifyScene;
+  const originalVerify = tmdb.verifyCandidate;
+  const originalDetails = tmdb.getDetails;
+  gemini.identifyScene = async () => ({
+    candidates: [
+      {
+        title: 'First Production',
+        releaseYear: 2020,
+        mediaType: 'movie',
+        confidence: 'high',
+        evidence: ['A distinctive red costume', 'The same lead actor appears in the shot'],
+        actorsOrCharacters: [],
+        sceneDescription: 'A person in a red costume enters a room.',
+        timestamps: [1, 2],
+      },
+      {
+        title: 'Second Production',
+        releaseYear: 2022,
+        mediaType: 'tv',
+        confidence: 'high',
+        evidence: ['A distinctive blue uniform', 'A recognizable spacecraft bridge'],
+        actorsOrCharacters: [],
+        sceneDescription: 'A crew member stands on a spacecraft bridge.',
+        timestamps: [7.5],
+      },
+    ],
+    requiresMoreEvidence: false,
+    uncertaintyReason: '',
+  });
+  tmdb.verifyCandidate = async (candidate) => ({
+    type: candidate.mediaType,
+    id: candidate.title === 'First Production' ? 21 : 22,
+    score: 1,
+    titleMatch: 'exact',
+    yearMatch: 'same',
+  });
+  tmdb.getDetails = async (type, id) => ({
+    tmdbId: id,
+    mediaType: type,
+    title: id === 21 ? 'First Production' : 'Second Production',
+  });
+  t.after(() => {
+    gemini.identifyScene = originalGemini;
+    tmdb.verifyCandidate = originalVerify;
+    tmdb.getDetails = originalDetails;
+  });
+
+  const result = await identification.identifyMovie({
+    frames: [
+      { image, timestamp: 1 },
+      { image: image.replace(/.$/, 'A'), timestamp: 2 },
+      { image: image.replace(/.$/, 'B'), timestamp: 7.5 },
+    ],
+  });
+  assert.equal(result.status, 'possible_match');
+  assert.match(result.message, /Multiple possible productions detected/);
+  assert.equal(result.matches.length, 2);
+  assert.deepEqual(result.matches.map((match) => match.timestamps), [[1, 2], [7.5]]);
+});
+
+test('insufficient AI evidence is returned without searching TMDB', async (t) => {
+  const originalGemini = gemini.identifyScene;
+  const originalVerify = tmdb.verifyCandidate;
+  gemini.identifyScene = async () => ({
+    candidates: [],
+    requiresMoreEvidence: true,
+    uncertaintyReason: 'The frames show only generic scenery.',
+  });
+  tmdb.verifyCandidate = async () => { throw new Error('TMDB should not run'); };
+  t.after(() => {
+    gemini.identifyScene = originalGemini;
+    tmdb.verifyCandidate = originalVerify;
+  });
+
+  const result = await identification.identifyMovie({ frames: [{ image }] });
+  assert.equal(result.status, 'insufficient_evidence');
+  assert.equal(result.matches.length, 0);
+  assert.match(result.uncertaintyReason, /generic scenery/);
+  assert.equal(typeof result.sessionId, 'string');
 });
 
 test('movie analysis does not issue a second attempt automatically after an upstream failure', async (t) => {

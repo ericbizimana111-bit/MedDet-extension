@@ -30,6 +30,30 @@ test('TMDB reports upstream HTTP, network, and malformed JSON errors cleanly', a
   await assert.rejects(tmdb.verifyCandidate({ title: 'Example', mediaType: 'movie' }), (error) => error.code === 'METADATA_UNAVAILABLE');
 });
 
+test('TMDB retries transient 503 responses at most twice', async (t) => {
+  const originalRequest = httpsRequest.requestHttps;
+  const originalKey = env.tmdb.apiKey;
+  const originalWarn = console.warn;
+  let calls = 0;
+  env.tmdb.apiKey = 'test-key';
+  console.warn = () => {};
+  httpsRequest.requestHttps = async (_url, options) => {
+    calls += 1;
+    assert.ok(options.totalTimeoutMs > 0 && options.totalTimeoutMs <= 10_000);
+    return calls < 3
+      ? { status: 503, body: '{}' }
+      : { status: 200, body: JSON.stringify({ results: [] }) };
+  };
+  t.after(() => {
+    httpsRequest.requestHttps = originalRequest;
+    env.tmdb.apiKey = originalKey;
+    console.warn = originalWarn;
+  });
+
+  assert.equal(await tmdb.verifyCandidate({ title: 'Example', mediaType: 'movie' }), null);
+  assert.equal(calls, 3);
+});
+
 test('TMDB verifies media type and year, then checks bounded alternative titles when needed', async (t) => {
   const originalRequest = httpsRequest.requestHttps;
   const originalKey = env.tmdb.apiKey;

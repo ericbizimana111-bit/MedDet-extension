@@ -64,17 +64,19 @@
   const ERRORS = {
     NETWORK: ['Can’t reach MedDet', 'Check your internet connection. If the problem continues, the server may be offline.'],
     TIMEOUT: ['Analysis timed out', 'The analysis took too long. Please try again later.'],
-    AI_TIMEOUT: ['Analysis timed out', 'The analysis service took too long to respond. Please try again later.'],
+    AI_TIMEOUT: ['Analysis request timed out', 'Gemini took too long to respond. Please try again.'],
     REQUEST_TIMEOUT: ['Analysis timed out', 'The complete analysis took too long. Please try again later.'],
-    AI_BUSY: ['Analysis temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
-    AI_QUOTA: ['Analysis temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
-    AI_UNAVAILABLE: ['Analysis temporarily unavailable', 'The analysis service could not be reached. Please try again later.'],
+    AI_BUSY: ['Gemini temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
+    AI_QUOTA: ['Gemini temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
+    AI_UNAVAILABLE: ['Gemini temporarily unavailable', 'The analysis service could not be reached. Please try again later.'],
     AI_REJECTED: ['Analysis configuration issue', 'The analysis service rejected the request. Please contact the MedDet server administrator.'],
+    AI_BLOCKED: ['Visual content could not be analyzed', 'The analysis service could not process this visual content.'],
+    AI_EMPTY_RESPONSE: ['No analysis was returned', 'The analysis service returned no usable candidates. Please try again.'],
     AI_INVALID_RESPONSE: ['Analysis could not be completed', 'The analysis service returned an invalid result. Please try again later.'],
     GEMINI_NOT_CONFIGURED: ['Movie analysis is not configured', 'The MedDet server administrator needs to configure the analysis service.'],
-    METADATA_BUSY: ['Movie lookup temporarily unavailable', 'The movie database is busy. Please try again shortly.'],
-    METADATA_UNAVAILABLE: ['Movie lookup temporarily unavailable', 'The movie database could not be reached. Please try again later.'],
-    METADATA_TIMEOUT: ['Movie lookup timed out', 'The movie database took too long to respond. Please try again.'],
+    METADATA_BUSY: ['TMDB metadata temporarily unavailable', 'The movie database is busy. Please try again shortly.'],
+    METADATA_UNAVAILABLE: ['TMDB metadata temporarily unavailable', 'The movie database could not be reached. Please try again later.'],
+    METADATA_TIMEOUT: ['TMDB metadata temporarily unavailable', 'The movie database took too long to respond. Your AI identification is still available.'],
     METADATA_INVALID_RESPONSE: ['Movie lookup could not be completed', 'The movie database returned an invalid result. Please try again later.'],
     TMDB_NOT_CONFIGURED: ['Movie lookup is not configured', 'The MedDet server administrator needs to configure the movie database.'],
     TMDB_REJECTED: ['Movie lookup configuration issue', 'The movie database rejected the server credentials. Please contact the MedDet server administrator.'],
@@ -85,6 +87,7 @@
     DAILY_CAPACITY: ['MedDet is full for today', 'The free daily capacity has been used. Please try again tomorrow.'],
     PROTECTED: ['This video can’t be analysed', 'It looks protected or blank, and MedDet does not bypass protections.'],
     CAPTURE_BLOCKED: ['Capture was blocked', 'The browser did not allow capturing this video. Try another video.'],
+    FRAME_TOO_LARGE: ['Frame could not be analyzed', 'Try another moment in the video.'],
     NOT_VISIBLE: ['Video not visible', 'Keep the video fully on screen while MedDet looks at it.'],
     NOT_READY: ['Video still loading', 'Wait until the video is playing, then try again.'],
     PAUSED: ['Play the video first', 'MedDet listens to the sound while the video plays.'],
@@ -211,6 +214,8 @@
             onAnalyzeMore: next,
             status: d.status,
             sceneFrame: sceneFrameFor([...priorFrames, ...frames]),
+            metadataUnavailable: d.metadataUnavailable,
+            message: d.message,
           });
         }
         if (d.status === 'completed') {
@@ -218,6 +223,8 @@
             onRetry: retry,
             status: d.status,
             sceneFrame: sceneFrameFor([...priorFrames, ...frames]),
+            metadataUnavailable: d.metadataUnavailable,
+            message: d.message,
           });
         }
         return showError('BAD_RESPONSE', 'The server returned an unexpected identification status.');

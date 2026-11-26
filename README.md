@@ -13,8 +13,7 @@ Phase 1 / MVP rules: free, no accounts, no payments, rate-limited to protect API
 | `TMDB_API_KEY` | https://www.themoviedb.org/settings/api (v3 key) |
 | `ACRCLOUD_HOST`, `ACRCLOUD_ACCESS_KEY`, `ACRCLOUD_ACCESS_SECRET` | console.acrcloud.com, create an "Audio & Video Recognition" project with the music database |
 
-Missing keys never produce fake results. The matching feature just reports it is not set up.
-Movies need Gemini + TMDB. Music needs ACRCloud. You can start with one and add the other later.
+Missing keys never produce fake results. Movie identification needs Gemini; TMDB adds catalog verification and official artwork. If TMDB is unavailable, a valid AI candidate is still shown as unverified. Music needs ACRCloud. You can start with one and add the other later.
 
 ## 2. Run the backend
 
@@ -36,10 +35,12 @@ curl http://localhost:5000/api/v1/health
 
 ## How it works
 
-- **Movie/TV:** captures up to 6 distinct frames over about 5 seconds of playback (or one frame if paused),
-  preserves timestamps and drops near-duplicates. Gemini assesses the frames together and TMDB verifies
-  candidate titles. If evidence is insufficient or only a possible match is found, the user may request
-  one additional analysis of up to 6 new frames. No more than 2 Gemini analyses are made per session.
+- **Movie/TV:** captures up to 6 distinct, higher-quality frames (or one frame if paused), preserves their
+  timestamps, samples more quickly after detected scene cuts, and drops near-duplicates. Gemini can return
+  multiple productions from fan edits or compilations with the timestamps where each appears. TMDB adds
+  optional catalog verification and official artwork. If evidence is insufficient or only a possible match
+  is found, the user may request one additional analysis of up to 6 new frames; the second pass excludes
+  previously captured visuals. No more than 2 Gemini analyses are made per session.
   Result cards prioritize official TMDB backdrops, then posters, then a captured frame as the main image.
   When available, the poster is shown separately and a locally retained frame is labeled “Scene analyzed.”
   Strong, possible and weak labels are evidence categories, not calibrated probabilities.
@@ -70,13 +71,15 @@ before scaling out. The Express proxy setting assumes exactly one trusted revers
   `priorFrames` from the first pass. Frame count, session, and request-size limits are validated.
 - `POST /api/v1/identify/music`: JSON body `{ "audio": "<base64 audio>", "mimeType": "audio/wav", "platform": "youtube" }`.
   Music identification returns `ACR_NOT_CONFIGURED` until all three ACRCloud values are set.
-- `GET /api/v1/health`: reports server status and whether the required service credentials are configured.
-  A true service flag indicates configuration only, not a live upstream connectivity check.
+- `GET /api/v1/health`: reports server status and whether the service credentials needed to start each
+  feature are configured. Movie readiness requires Gemini; TMDB is optional enrichment. A true service
+  flag indicates configuration only, not a live upstream connectivity check.
 
 The Gemini, TMDB, and ACRCloud integrations use IPv4-selected HTTPS requests with bounded socket and
-overall deadlines. Closing/cancelling an identification cancels its upstream requests. Automated tests
-mock paid upstream services; passing them does not establish live API availability or identification
-accuracy. Movie matching confidence has not been calibrated against a labeled scene dataset.
+overall deadlines. Gemini and TMDB retry transient failures at most twice. Closing/cancelling an
+identification cancels its upstream requests. Automated tests mock paid upstream services; passing them
+does not establish live API availability or identification accuracy. Movie matching confidence has not
+been calibrated against a labeled scene dataset.
 
 ## Known limits (honest list)
 

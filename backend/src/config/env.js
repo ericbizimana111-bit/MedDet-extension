@@ -27,7 +27,7 @@ const env = {
 function serviceStatus() {
   const acr = Boolean(env.acr.host && env.acr.accessKey && env.acr.accessSecret);
   return {
-    movie: Boolean(env.gemini.apiKey && env.tmdb.apiKey),
+    movie: Boolean(env.gemini.apiKey),
     music: acr,
     gemini: Boolean(env.gemini.apiKey),
     tmdb: Boolean(env.tmdb.apiKey),

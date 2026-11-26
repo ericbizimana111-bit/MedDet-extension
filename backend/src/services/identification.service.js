@@ -58,78 +58,72 @@ function catalogMatchQuality(verification) {
   return 'exact_title_year_unknown';
 }
 
-function combineSignals(signals) {
-  const controller = new AbortController();
-  const listeners = [];
-  for (const signal of signals.filter(Boolean)) {
-    const abort = () => controller.abort(signal.reason);
-    if (signal.aborted) abort();
-    else {
-      signal.addEventListener('abort', abort, { once: true });
-      listeners.push(() => signal.removeEventListener('abort', abort));
-    }
-  }
-  return {
-    signal: controller.signal,
-    dispose: () => listeners.forEach((remove) => remove()),
-  };
-}
-
 async function rankCandidates(candidates, { signal, deadlineAt }) {
-  const groupController = new AbortController();
-  const linked = combineSignals([signal, groupController.signal]);
-  try {
-    const verified = await Promise.all(candidates.slice(0, 3).map(async (candidate) => {
-      try {
-        const verification = await tmdb.verifyCandidate(candidate, { signal: linked.signal, deadlineAt });
-        return verification ? { candidate, verification } : null;
-      } catch (error) {
-        groupController.abort(error);
-        throw error;
-      }
-    }));
-    const unique = new Map();
-    for (const item of verified.filter(Boolean)) {
-      const key = `${item.verification.type}:${item.verification.id}`;
-      if (!unique.has(key)) unique.set(key, item);
+  const candidateMatch = (candidate, level = candidate.confidence === 'low' ? 'low' : 'possible') => ({
+    title: candidate.title,
+    releaseYear: candidate.releaseYear,
+    mediaType: candidate.mediaType,
+    matchLevel: level,
+    modelConfidence: candidate.confidence,
+    evidenceQuality: evidenceQuality(candidate),
+    actorsOrCharacters: candidate.actorsOrCharacters,
+    sceneDescription: candidate.sceneDescription || '',
+    evidence: candidate.evidence,
+    timestamps: candidate.timestamps,
+    metadataUnavailable: true,
+  });
+  const checked = await Promise.all(candidates.slice(0, 3).map(async (candidate) => {
+    try {
+      return { candidate, verification: await tmdb.verifyCandidate(candidate, { signal, deadlineAt }) };
+    } catch (error) {
+      if (signal?.aborted && signal.reason?.code === 'ABORT_ERR') throw error;
+      console.warn('[tmdb] optional candidate verification failed', error.code || 'upstream error');
+      return { candidate, error };
     }
+  }));
+  const unique = new Map();
+  for (const item of checked.filter((entry) => entry.verification)) {
+    const key = `${item.verification.type}:${item.verification.id}`;
+    if (!unique.has(key)) unique.set(key, item);
+  }
 
-    const ranked = [...unique.values()].map(({ candidate, verification }) => ({
-      candidate,
-      verification,
-      level: matchLevel(candidate, verification),
-    })).filter((item) => item.level !== 'none');
-
-    const levelOrder = { high: 3, possible: 2, low: 1 };
-    ranked.sort((a, b) => (levelOrder[b.level] - levelOrder[a.level])
+  const levelOrder = { high: 3, possible: 2, low: 1 };
+  const ranked = [...unique.values()].map(({ candidate, verification }) => ({
+    candidate,
+    verification,
+    level: matchLevel(candidate, verification),
+  })).filter((item) => item.level !== 'none')
+    .sort((a, b) => (levelOrder[b.level] - levelOrder[a.level])
       || (b.verification.score - a.verification.score)
       || (b.candidate.evidence.length - a.candidate.evidence.length));
 
-    const matches = await Promise.all(ranked.map(async ({ candidate, verification, level }) => {
-      try {
-        const details = await tmdb.getDetails(verification.type, verification.id, { signal: linked.signal, deadlineAt });
-        return {
-          ...details,
-          matchLevel: level,
-          modelConfidence: candidate.confidence,
-          evidenceQuality: evidenceQuality(candidate),
-          catalogMatchQuality: catalogMatchQuality(verification),
-          actorsOrCharacters: candidate.actorsOrCharacters,
-          sceneDescription: candidate.sceneDescription || '',
-          evidence: candidate.evidence,
-        };
-      } catch (error) {
-        groupController.abort(error);
-        throw error;
-      }
-    }));
-    return matches;
-  } catch (error) {
-    if (!groupController.signal.aborted) groupController.abort(error);
-    throw error;
-  } finally {
-    linked.dispose();
+  let metadataUnavailable = checked.some((entry) => entry.error);
+  const matches = await Promise.all(ranked.map(async ({ candidate, verification, level }) => {
+    try {
+      const details = await tmdb.getDetails(verification.type, verification.id, { signal, deadlineAt });
+      return {
+        ...details,
+        matchLevel: level,
+        modelConfidence: candidate.confidence,
+        evidenceQuality: evidenceQuality(candidate),
+        catalogMatchQuality: catalogMatchQuality(verification),
+        actorsOrCharacters: candidate.actorsOrCharacters,
+        sceneDescription: candidate.sceneDescription || '',
+        evidence: candidate.evidence,
+        timestamps: candidate.timestamps,
+      };
+    } catch (error) {
+      if (signal?.aborted && signal.reason?.code === 'ABORT_ERR') throw error;
+      metadataUnavailable = true;
+      console.warn('[tmdb] optional detail lookup failed', error.code || 'upstream error');
+      return candidateMatch(candidate, level);
+    }
+  }));
+
+  for (const { candidate, error } of checked) {
+    if (error) matches.push(candidateMatch(candidate));
   }
+  return { matches, metadataUnavailable };
 }
 
 function insufficientEvidence(candidates, uncertaintyReason, sessionId) {
@@ -160,7 +154,8 @@ async function identifyInitial({ frames, platform, videoContext, signal, deadlin
     };
   }
 
-  const matches = await rankCandidates(ai.candidates, { signal, deadlineAt });
+  const ranked = await rankCandidates(ai.candidates, { signal, deadlineAt });
+  const { matches, metadataUnavailable } = ranked;
   if (!matches.length) {
     return {
       status: 'no_match',
@@ -172,7 +167,8 @@ async function identifyInitial({ frames, platform, videoContext, signal, deadlin
   }
 
   const hasSingleStrongMatch = matches[0].matchLevel === 'high'
-    && matches.filter((match) => match.matchLevel === 'high').length === 1;
+    && matches.filter((match) => match.matchLevel === 'high').length === 1
+    && !metadataUnavailable;
   if (hasSingleStrongMatch) return { status: 'completed', matches, candidates: ai.candidates };
 
   const sessionId = createSession(ai.candidates, prepared);
@@ -181,7 +177,12 @@ async function identifyInitial({ frames, platform, videoContext, signal, deadlin
     matches,
     candidates: ai.candidates,
     uncertaintyReason: ai.uncertaintyReason || 'Additional frames may help distinguish this candidate from alternatives.',
-    message: 'MedDet found a possible match, but the available visual evidence is not strong enough to confirm it.',
+    message: metadataUnavailable
+      ? 'TMDB metadata is temporarily unavailable; the AI identification is shown without catalog verification.'
+      : matches.length > 1
+        ? 'Multiple possible productions detected in this video.'
+        : 'MedDet found a possible match, but the available visual evidence is not strong enough to confirm it.',
+    ...(metadataUnavailable ? { metadataUnavailable: true } : {}),
     sessionId,
   };
 }
@@ -229,7 +230,8 @@ async function identifyAdditional({ frames, priorFrames, sessionId, platform, vi
     };
   }
 
-  const matches = await rankCandidates(ai.candidates, { signal, deadlineAt });
+  const ranked = await rankCandidates(ai.candidates, { signal, deadlineAt });
+  const { matches, metadataUnavailable } = ranked;
   if (!matches.length) {
     return {
       status: 'no_match',
@@ -240,14 +242,23 @@ async function identifyAdditional({ frames, priorFrames, sessionId, platform, vi
     };
   }
   const hasSingleStrongMatch = matches[0].matchLevel === 'high'
-    && matches.filter((match) => match.matchLevel === 'high').length === 1;
+    && matches.filter((match) => match.matchLevel === 'high').length === 1
+    && !metadataUnavailable;
+  const message = metadataUnavailable
+    ? 'TMDB metadata is temporarily unavailable; the AI identification is shown without catalog verification.'
+    : matches.length > 1
+      ? 'Multiple possible productions detected in this video.'
+      : hasSingleStrongMatch
+        ? null
+        : 'This remains a possible match; the available evidence does not justify a confirmed identification.';
   return {
     status: hasSingleStrongMatch ? 'completed' : 'possible_match',
     matches,
     candidates: ai.candidates,
+    ...(metadataUnavailable ? { metadataUnavailable: true } : {}),
+    ...(message ? { message } : {}),
     ...(hasSingleStrongMatch ? {} : {
       uncertaintyReason: ai.uncertaintyReason || 'The additional frames did not provide enough independent clues for a strong match.',
-      message: 'This remains a possible match; the available evidence does not justify a confirmed identification.',
     }),
   };
 }

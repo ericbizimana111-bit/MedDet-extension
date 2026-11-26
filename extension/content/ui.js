@@ -258,9 +258,10 @@ p{margin:0 0 10px;color:#3A4050}
     return null;
   }
 
-  function showMovie(matches, loadImage, { onRetry, onAnalyzeMore, status, sceneFrame }) {
+  function showMovie(matches, loadImage, { onRetry, onAnalyzeMore, status, sceneFrame, metadataUnavailable, message }) {
     const top = matches[0];
     const ambiguousStrongMatch = status === 'possible_match' && top.matchLevel === 'high';
+    const multipleProductions = matches.length > 1;
     const hero = artworkFigure('Official TMDB artwork', 'hero');
     const poster = artworkFigure('Official poster', 'poster-art');
     const scene = artworkFigure('Scene analyzed', 'scene-art');
@@ -289,6 +290,9 @@ p{margin:0 0 10px;color:#3A4050}
         catalogQuality ? 'Catalog check: ' + catalogQuality : null,
         'Visual evidence: ' + evidenceLabel,
       ].filter(Boolean).join(' · ') }),
+      top.timestamps?.length ? h('div', { class: 'meta', text: 'Seen at: ' + top.timestamps.map((time) => `${Number(time).toFixed(1)}s`).join(', ') }) : null,
+      metadataUnavailable ? h('p', { class: 'ov', text: 'TMDB metadata is temporarily unavailable. This AI identification has not been catalog-verified.' }) : null,
+      multipleProductions ? h('p', { class: 'ov', text: message || 'Multiple possible productions detected in this video.' }) : null,
       top.overview ? h('p', { class: 'ov', text: top.overview }) : null,
       top.director?.length ? h('div', { class: 'meta', text: (top.mediaType === 'tv' ? 'Created by ' : 'Directed by ') + top.director.join(', ') }) : null,
       top.cast?.length ? h('div', { class: 'meta', text: 'Cast: ' + top.cast.slice(0, 4).join(', ') }) : null,
@@ -304,17 +308,18 @@ p{margin:0 0 10px;color:#3A4050}
         loadArtwork(alt, artworkSources(m), loadImage);
         parts.push(h('div', { class: 'alt' }, alt.element, h('div', {}, h('b', { text: m.title }),
           h('span', { text: [m.mediaType === 'tv' ? 'TV show' : 'Movie', m.releaseYear, LEVEL[m.matchLevel]].filter(Boolean).join(', ') }),
-          h('div', {}, h('a', { class: 'meta', href: m.tmdbUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Details' })))));
+          m.timestamps?.length ? h('div', { class: 'meta', text: 'Seen at: ' + m.timestamps.map((time) => `${Number(time).toFixed(1)}s`).join(', ') }) : null,
+          m.tmdbUrl ? h('div', {}, h('a', { class: 'meta', href: m.tmdbUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Details' })) : null)));
       });
     }
     if (onAnalyzeMore) {
       parts.push(h('p', { text: 'This is a possible match. More visual evidence may improve confidence.' }));
     }
     parts.push(h('div', { class: 'actions' },
-      h('a', { class: 'a p', href: top.tmdbUrl, target: '_blank', rel: 'noopener noreferrer', text: 'View on TMDB' }),
+      top.tmdbUrl ? h('a', { class: 'a p', href: top.tmdbUrl, target: '_blank', rel: 'noopener noreferrer', text: 'View on TMDB' }) : null,
       onAnalyzeMore ? h('button', { class: 'a', text: 'Analyze more of this video', onclick: onAnalyzeMore }) : null,
       h('button', { class: 'a', text: 'Try again', onclick: onRetry })));
-    open(h('div', {}, header(status === 'possible_match' ? 'Possible match' : 'Identification result'), h('div', { class: 'body' }, parts)));
+    open(h('div', {}, header(multipleProductions ? 'Multiple possible productions' : status === 'possible_match' ? 'Possible match' : 'Identification result'), h('div', { class: 'body' }, parts)));
     const heroSources = artworkSources(top, sceneFrame);
     loadArtwork(hero, heroSources, loadImage).then((kind) => {
       if (kind === 'backdrop' && isTmdbImageUrl(top.poster)) {

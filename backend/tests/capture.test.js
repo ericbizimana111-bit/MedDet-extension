@@ -50,7 +50,7 @@ function createCapture(video, visuals, onSleep = () => {}) {
 
     toDataURL(mime, quality) {
       imageOptions = { width: this.width, height: this.height, mime, quality };
-      return 'data:image/jpeg;base64,/9j/AAAA';
+      return `data:image/jpeg;base64,/9j/${this.visual}`;
     }
   }
 
@@ -110,14 +110,14 @@ test('playing video captures up to six distinct frames with timestamps and bound
   const frames = await capture.captureFrames(video);
 
   assert.equal(frames.length, 6);
-  assert.deepEqual(Array.from(frames, (frame) => frame.timestamp), [0, 1.1, 2.2, 3.3, 4.4, 5.5]);
+  assert.deepEqual(Array.from(frames, (frame) => frame.timestamp), [0, 0.4, 0.7, 1, 1.4, 1.8]);
   assert.ok(frames.every((frame) => frame.hash && frame.image.startsWith('/9j/')));
-  assert.deepEqual(getImageOptions(), { width: 720, height: 405, mime: 'image/jpeg', quality: 0.72 });
+  assert.deepEqual(getImageOptions(), { width: 960, height: 540, mime: 'image/jpeg', quality: 0.84 });
 
   const portrait = makeVideo({ paused: true, videoWidth: 1080, videoHeight: 1920 });
   const portraitCapture = createCapture(portrait, ['11111111']);
   await portraitCapture.capture.captureFrames(portrait);
-  assert.deepEqual(portraitCapture.getImageOptions(), { width: 720, height: 1280, mime: 'image/jpeg', quality: 0.72 });
+  assert.deepEqual(portraitCapture.getImageOptions(), { width: 960, height: 1707, mime: 'image/jpeg', quality: 0.84 });
 });
 
 test('paused video captures one frame and identical moments are deduplicated', async () => {
@@ -144,6 +144,14 @@ test('short videos stop when playback ends and second pass excludes previously c
   const secondVideo = makeVideo({ paused: true });
   const secondCapture = createCapture(secondVideo, ['11111111']);
   assert.equal((await secondCapture.capture.captureFrames(secondVideo, { excludeFrames: prior })).length, 0);
+
+  const montageVideo = makeVideo();
+  const montageCapture = createCapture(montageVideo, ['11111111', '00000000', '01010101']);
+  const additional = await montageCapture.capture.captureFrames(montageVideo, { excludeFrames: prior });
+  assert.ok(additional.length > 0);
+  assert.ok(additional.every((frame) => frame.hash !== prior[0].hash));
+  assert.ok(additional.every((frame) => frame.timestamp > 0));
+  assert.ok(additional.every((frame) => frame.image !== prior[0].image));
 });
 
 test('capture fails explicitly when the video is not ready', async () => {
