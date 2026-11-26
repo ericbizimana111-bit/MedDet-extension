@@ -4,6 +4,8 @@
   let enabled = true;
   let locked = null;      // video being identified; the button will not jump away while a panel is open
   let token = null;       // cancel token for the current run
+  let busy = false;
+  let activeRequestId = null;
   let lastTick = 0;
 
   chrome.storage.sync.get('enabled').then((v) => { enabled = v.enabled !== false; });
@@ -61,6 +63,16 @@
 
   const ERRORS = {
     NETWORK: ['Can’t reach MedDet', 'Check your internet connection. If the problem continues, the server may be offline.'],
+    TIMEOUT: ['Analysis timed out', 'The analysis took too long. Please try again later.'],
+    AI_TIMEOUT: ['Analysis timed out', 'The analysis service took too long to respond. Please try again later.'],
+    REQUEST_TIMEOUT: ['Analysis timed out', 'The complete analysis took too long. Please try again later.'],
+    AI_BUSY: ['Analysis temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
+    AI_QUOTA: ['Analysis temporarily unavailable', 'The analysis service is busy. Please try again shortly.'],
+    AI_UNAVAILABLE: ['Analysis temporarily unavailable', 'The analysis service could not be reached. Please try again later.'],
+    AI_INVALID_RESPONSE: ['Analysis could not be completed', 'The analysis service returned an invalid result. Please try again later.'],
+    METADATA_BUSY: ['Movie lookup temporarily unavailable', 'The movie database is busy. Please try again shortly.'],
+    METADATA_UNAVAILABLE: ['Movie lookup temporarily unavailable', 'The movie database could not be reached. Please try again later.'],
+    SESSION_EXPIRED: ['Analysis session expired', 'Start a new identification to analyze this video again.'],
     RATE_LIMITED: ['Free limit reached', 'You have used the free identifications available for now. Try again in a while.'],
     DAILY_CAPACITY: ['MedDet is full for today', 'The free daily capacity has been used. Please try again tomorrow.'],
     PROTECTED: ['This video can’t be analysed', 'It looks protected or blank, and MedDet does not bypass protections.'],
@@ -79,22 +91,93 @@
     ui.showMessage({ title, body: ERRORS[code] ? body : serverMessage || body, actionLabel: 'Back', onAction: () => ui.reopenMenu() });
   }
 
-  async function run(kind) {
-    const video = (locked = current);
+  const requestFrames = (frames) => frames.map(({ image, timestamp }) => ({ image, timestamp }));
+
+  async function run(kind, continuation = null) {
+    if (busy) return;
+    const video = (locked || current);
     if (!video) return;
+    busy = true;
+    locked = video;
     const my = (token = { cancelled: false });
-    const cancel = () => { my.cancelled = true; locked = null; ui.closeAll(); };
+    const cancel = () => {
+      my.cancelled = true;
+      if (activeRequestId) sendMsg({ type: 'CANCEL_IDENTIFY', requestId: activeRequestId });
+      locked = null;
+      ui.closeAll();
+    };
     try {
       let res;
       if (kind === 'movie') {
-        ui.showProgress('Looking at the video', 'Capturing a few moments…', { onCancel: cancel, fraction: 0 });
+        const priorFrames = continuation?.frames || [];
+        const pass = continuation ? 'additional' : 'initial';
+        ui.showProgress('Looking at the video', continuation ? 'Capturing new moments…' : 'Capturing a few moments…', { onCancel: cancel });
         const frames = await capture.captureFrames(video, {
+          count: 6,
+          intervalMs: 1000,
+          excludeFrames: priorFrames,
           token: my,
-          onProgress: (i, n) => ui.showProgress('Looking at the video', `Capturing scene ${i} of ${n}…`, { onCancel: cancel, fraction: i / (n + 1) }),
+          onProgress: (i, n) => ui.showProgress('Looking at the video', `Checking visual moment ${i} of ${n}…`, { onCancel: cancel }),
         });
         if (my.cancelled) return;
-        ui.showProgress('Identifying', 'Matching the scene and checking the movie database…', { onCancel: cancel });
-        res = await sendMsg({ type: 'IDENTIFY', kind: 'movie', body: { frames, platform: platform.name, videoContext: { currentTime: video.currentTime } } });
+        if (continuation && !frames.length) {
+          ui.showMessage({
+            title: 'No new visual evidence yet',
+            body: 'Move the video to a different moment or let it play, then analyze again.',
+            actionLabel: 'Analyze more of this video',
+            onAction: () => run('movie', continuation),
+            secondaryActionLabel: 'Try again',
+            onSecondaryAction: () => ui.reopenMenu(),
+          });
+          return;
+        }
+        ui.showProgress('Analyzing the scene', 'Checking possible movie matches…', { onCancel: cancel });
+        const requestId = crypto.randomUUID();
+        activeRequestId = requestId;
+        const body = continuation
+          ? {
+              pass,
+              sessionId: continuation.sessionId,
+              frames: requestFrames(frames),
+              priorFrames: requestFrames(priorFrames),
+              platform: platform.name,
+              videoContext: { currentTime: video.currentTime },
+            }
+          : {
+              pass,
+              frames: requestFrames(frames),
+              platform: platform.name,
+              videoContext: { currentTime: video.currentTime },
+            };
+        res = await sendMsg({ type: 'IDENTIFY', kind: 'movie', body, requestId });
+        if (activeRequestId === requestId) activeRequestId = null;
+        if (my.cancelled) return;
+
+        if (!res?.success) return showError(res?.error?.code, res?.error?.message);
+        const d = res.data;
+        const retry = () => ui.reopenMenu();
+        if (d.status === 'insufficient_evidence') {
+          const next = d.sessionId ? () => run('movie', { sessionId: d.sessionId, frames: [...priorFrames, ...frames] }) : null;
+          return ui.showMessage({
+            title: 'More visual evidence needed',
+            body: d.message || 'MedDet could not identify the production confidently from these moments.',
+            actionLabel: next ? 'Analyze more of this video' : 'Try again',
+            onAction: next || retry,
+            secondaryActionLabel: next ? 'Try another video' : undefined,
+            onSecondaryAction: next ? retry : undefined,
+          });
+        }
+        if (d.status === 'no_match') {
+          return ui.showMessage({ title: 'No match found', body: d.message, actionLabel: 'Try again', onAction: retry });
+        }
+        if (d.status === 'possible_match') {
+          const next = d.sessionId ? () => run('movie', { sessionId: d.sessionId, frames: [...priorFrames, ...frames] }) : null;
+          return ui.showMovie(d.matches, loadImage, { onRetry: retry, onAnalyzeMore: next, status: d.status });
+        }
+        if (d.status === 'completed') {
+          return ui.showMovie(d.matches, loadImage, { onRetry: retry, status: d.status });
+        }
+        return showError('BAD_RESPONSE', 'The server returned an unexpected identification status.');
       } else {
         const audio = await capture.captureAudio(video, {
           token: my,
@@ -117,6 +200,9 @@
     } catch (e) {
       if (my.cancelled || e.code === 'CANCELLED') return;
       showError(e.code, e.message);
+    } finally {
+      busy = false;
+      activeRequestId = null;
     }
     // `locked` stays set while a result is on screen so the button stays with its video.
     // It is released when the panel is closed (see ui.onClose) or the video leaves the screen.
