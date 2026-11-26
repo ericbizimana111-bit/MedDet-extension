@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const gemini = require('./gemini.service');
 const tmdb = require('./tmdb.service');
 const acr = require('./acrcloud.service');
+const musicArtwork = require('./musicArtwork.service');
 const { prepareFrames } = require('./frame.service');
 const { matchLevel } = require('../utils/matching');
 const AppError = require('../utils/AppError');
@@ -261,7 +262,23 @@ async function identifyMusic({ audio, mimeType }) {
   if (!result.found) {
     return { status: 'no_match', track: null, message: 'No song was recognised. Try again while the music is clearly audible, without speech over it.' };
   }
-  return { status: 'completed', track: result.track };
+  const artwork = await musicArtwork.findArtwork(result.track);
+  const releaseYear = result.track.releaseYear || artwork?.artworkReleaseYear || null;
+  return {
+    status: 'completed',
+    track: {
+      ...result.track,
+      releaseYear,
+      genre: result.track.genre || artwork?.artworkGenre || null,
+      artworkAlbum: artwork?.artworkAlbum || null,
+      artworkUrl: artwork?.artworkUrl || null,
+      artworkProvider: artwork?.artworkProvider || null,
+      artworkType: artwork?.artworkType || null,
+      artworkReleaseYear: artwork?.artworkReleaseYear || null,
+      artworkGenre: artwork?.artworkGenre || null,
+      artworkLink: artwork?.artworkLink || null,
+    },
+  };
 }
 
 module.exports = { identifyMovie, identifyMusic };

@@ -12,15 +12,32 @@ function sign(timestamp) {
 function normalizeTrack(m) {
   const spotifyId = m.external_metadata?.spotify?.track?.id;
   const ytId = m.external_metadata?.youtube?.vid;
+  const score = m.score != null && Number.isFinite(Number(m.score))
+    ? Math.max(0, Math.min(100, Number(m.score)))
+    : null;
   const links = [];
   if (spotifyId) links.push({ label: 'Spotify', url: `https://open.spotify.com/track/${spotifyId}` });
   if (ytId) links.push({ label: 'YouTube', url: `https://www.youtube.com/watch?v=${ytId}` });
+  const artists = Array.isArray(m.artists)
+    ? m.artists.map((artist) => typeof artist?.name === 'string' ? artist.name.trim() : '').filter(Boolean)
+    : [];
+  const genre = Array.isArray(m.genres)
+    ? m.genres.find((item) => typeof item?.name === 'string' && item.name.trim())?.name || null
+    : null;
+  const releaseDate = typeof m.release_date === 'string' ? m.release_date : null;
+  const releaseYear = Number.parseInt(releaseDate?.slice(0, 4), 10);
   return {
     title: m.title,
-    artists: (m.artists || []).map((a) => a.name),
-    album: m.album?.name || null,
-    releaseDate: m.release_date || null,
-    durationMs: m.duration_ms || null,
+    artists,
+    album: typeof m.album?.name === 'string' && m.album.name.trim() ? m.album.name : null,
+    releaseDate,
+    releaseYear: Number.isInteger(releaseYear) && releaseYear >= 1888 && releaseYear <= 2100 ? releaseYear : null,
+    durationMs: Number.isFinite(m.duration_ms) && m.duration_ms > 0 ? m.duration_ms : null,
+    genre,
+    confidence: score == null ? null : score >= 90 ? 'high' : score >= 75 ? 'medium' : 'low',
+    confidenceScore: score,
+    label: typeof m.label === 'string' && m.label.trim() ? m.label.trim() : null,
+    isrc: typeof m.external_ids?.isrc === 'string' && m.external_ids.isrc.trim() ? m.external_ids.isrc.trim() : null,
     links,
   };
 }

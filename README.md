@@ -45,6 +45,9 @@ curl http://localhost:5000/api/v1/health
   Strong, possible and weak labels are evidence categories, not calibrated probabilities.
 - **Music:** records ~12 seconds of the video's own audio, converts to 8 kHz mono WAV in the browser,
   backend sends it to ACRCloud. Silence, paused or muted video gives a clear message, not a fake result.
+  Successful ACRCloud matches may receive optional verified iTunes artwork metadata. Artwork is shown only
+  for exact normalized track and artist matches from the Apple Music catalog, and unavailable or failed
+  artwork lookup never fails song identification.
 - **Frame capture** reads the video directly. If the site blocks that (cross-origin), it falls back to a
   tab screenshot cropped to the video. Protected (DRM) or black video is reported, never bypassed.
 - **Movie-analysis sessions** are held in backend memory for up to 15 minutes. Only candidate metadata and

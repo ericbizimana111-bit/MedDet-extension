@@ -102,3 +102,12 @@ test('all missing or undecodable images remove the empty artwork element', async
   assert.equal(chosen, null);
   assert.equal(figure.element.removed, true);
 });
+
+test('music artwork accepts only verified iTunes mzstatic URLs', () => {
+  const ui = createUiHarness();
+  const artworkUrl = 'https://is1-ssl.mzstatic.com/image/thumb/Music123/cover.jpg';
+  assert.equal(ui.musicArtworkSource({ artworkProvider: 'iTunes', artworkUrl, artworkType: 'album' }).length, 1);
+  assert.equal(ui.musicArtworkSource({ artworkProvider: 'iTunes', artworkUrl: 'https://example.com/cover.jpg' }).length, 0);
+  assert.equal(ui.musicArtworkSource({ artworkProvider: 'iTunes', artworkUrl: 'http://is1-ssl.mzstatic.com/image/thumb/Music123/cover.jpg' }).length, 0);
+  assert.equal(ui.musicArtworkSource({ artworkProvider: 'iTunes', artworkUrl: 'https://is1-ssl.mzstatic.com/image/thumb/Music123/cover.jpg?size=large' }).length, 0);
+});

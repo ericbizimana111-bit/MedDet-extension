@@ -45,6 +45,19 @@ p{margin:0 0 10px;color:#3A4050}
 .artwork.poster-art img{aspect-ratio:2/3}
 .artwork.scene-art img{aspect-ratio:16/9}
 .artwork figcaption{padding:5px 8px;font-size:11px;color:#5A6070;background:#F6F5F1}
+.music-cover{width:100%;max-width:250px;margin:0 auto 14px;box-shadow:0 6px 18px rgba(20,22,31,.18)}
+.music-cover img{aspect-ratio:1/1}
+.music-fallback{width:100%;max-width:250px;aspect-ratio:1/1;margin:0 auto 14px;border-radius:10px;
+  display:grid;place-items:center;gap:12px;padding:20px;text-align:center;color:#EDEBE4;
+  background:radial-gradient(circle at 75% 22%,rgba(56,225,198,.34),transparent 34%),linear-gradient(145deg,#222637,#10121A)}
+.music-fallback[hidden]{display:none}
+.record{width:112px;height:112px;border-radius:50%;display:grid;place-items:center;
+  background:repeating-radial-gradient(circle,#171923 0 3px,#292C38 4px 5px);box-shadow:0 5px 16px #0b0c11}
+.record:after{content:"";width:20px;height:20px;border-radius:50%;background:#38E1C6;box-shadow:inset 0 0 0 6px #F6F5F1}
+.confidence{display:inline-block;padding:3px 9px;border-radius:12px;font-size:12px;font-weight:650;margin:2px 0 8px}
+.confidence.medium{background:#F6E7B8;color:#6B4E00}
+.confidence.low{background:#EBD0CC;color:#7A2A20}
+.music-title{font-size:20px}
 .poster{flex:none;width:84px;height:126px;border-radius:8px;object-fit:cover}
 .meta{font-size:12px;color:#5A6070;margin:2px 0 8px}
 .badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:650;margin-bottom:6px}
@@ -192,6 +205,23 @@ p{margin:0 0 10px;color:#3A4050}
     return sources;
   }
 
+  function musicArtworkSource(track) {
+    if (track?.artworkProvider !== 'iTunes' || typeof track.artworkUrl !== 'string') return [];
+    try {
+      const url = new URL(track.artworkUrl);
+      if (url.protocol !== 'https:'
+          || !/^[a-z0-9-]+\.mzstatic\.com$/i.test(url.hostname)
+          || !/^\/image\/thumb\/[A-Za-z0-9_./-]+\.(?:jpe?g|png|webp)$/i.test(url.pathname)
+          || url.search || url.hash) return [];
+      const label = track.artworkType === 'single' ? 'Official single artwork'
+        : track.artworkType === 'alternative_release' ? 'Verified alternative release artwork'
+          : 'Official album artwork';
+      return [{ url: url.toString(), label, kind: 'music' }];
+    } catch {
+      return [];
+    }
+  }
+
   function artworkFigure(label, className) {
     const image = h('img', { alt: label, loading: 'lazy', decoding: 'async', hidden: '' });
     const caption = h('figcaption', { text: label });
@@ -304,14 +334,52 @@ p{margin:0 0 10px;color:#3A4050}
     });
   }
 
-  function showMusic(track, { onRetry }) {
-    const meta = [track.artists?.join(', '), track.album, track.releaseDate?.slice(0, 4)].filter(Boolean);
-    open(h('div', {}, header('Found it'), h('div', { class: 'body' },
-      h('h3', { text: track.title }),
-      ...meta.map((m) => h('div', { class: 'meta', text: m })),
+  function showMusic(track, loadImage, { onRetry }) {
+    const cover = artworkFigure('Official album artwork', 'music-cover');
+    const fallback = h('div', { class: 'music-fallback', hidden: '' },
+      h('div', { class: 'record', 'aria-hidden': 'true' }),
+      h('span', { text: 'No verified artwork available' }));
+    const confidenceLabels = { high: 'High ACRCloud match', medium: 'Medium ACRCloud match', low: 'Low ACRCloud match' };
+    const confidence = track.confidence && confidenceLabels[track.confidence]
+      ? h('span', { class: 'confidence ' + track.confidence, text: confidenceLabels[track.confidence] })
+      : h('span', { class: 'meta', text: 'ACRCloud match confidence unavailable' });
+    const meta = [
+      track.artists?.length ? track.artists.join(', ') : 'Artist unavailable',
+      track.album,
+      track.releaseDate?.slice(0, 4),
+      track.genre,
+      track.label,
+      track.durationMs ? `${Math.round(track.durationMs / 1000 / 60)} min` : null,
+      track.isrc ? `ISRC ${track.isrc}` : null,
+    ].filter(Boolean);
+    const content = h('div', { class: 'body' },
+      cover.element,
+      fallback,
+      confidence,
+      h('h3', { class: 'music-title', text: track.title || 'Unknown track' }),
+      ...meta.map((value, index) => h('div', { class: 'meta', text: index === 0 ? value : value })),
       h('div', { class: 'actions' },
-        ...(track.links || []).map((l, i) => h('a', { class: 'a' + (i === 0 ? ' p' : ''), href: l.url, target: '_blank', rel: 'noopener noreferrer', text: 'Open in ' + l.label })),
-        h('button', { class: 'a', text: 'Try again', onclick: onRetry })))));
+        ...(track.links || []).map((link, index) => h('a', {
+          class: 'a' + (index === 0 ? ' p' : ''),
+          href: link.url,
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          text: 'Open in ' + link.label,
+        })),
+        h('button', { class: 'a', text: 'Try again', onclick: onRetry })));
+    open(h('div', {}, header('Music identified'), content));
+    const sources = musicArtworkSource(track);
+    if (sources.length) {
+      loadArtwork(cover, sources, loadImage).then((kind) => {
+        if (!kind) {
+          cover.element.remove();
+          fallback.hidden = false;
+        }
+      });
+    } else {
+      cover.element.remove();
+      fallback.hidden = false;
+    }
   }
 
   MedDet.ui = {
@@ -322,6 +390,7 @@ p{margin:0 0 10px;color:#3A4050}
     hideForCapture: (on) => { if (host) host.style.visibility = on ? 'hidden' : 'visible'; },
     reopenMenu: () => { closeAll(); toggleMenu(); },
     artworkSources,
+    musicArtworkSource,
     loadArtwork,
   };
 })();

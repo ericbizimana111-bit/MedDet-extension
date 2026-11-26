@@ -56,17 +56,28 @@ async function captureTab(sender) {
 
 // Page CSP can block remote images in injected UI, so poster images are fetched here.
 async function fetchImage(url) {
-  if (typeof url !== 'string'
-      || !/^https:\/\/image\.tmdb\.org\/t\/p\/(?:w\d{2,4}|original)\/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp)$/i.test(url)) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return fail('BAD_URL', 'Image URL is invalid.'); }
+  const tmdbImage = parsed.origin === 'https://image.tmdb.org'
+    && /^\/t\/p\/(?:w\d{2,4}|original)\/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp)$/i.test(parsed.pathname);
+  const appleArtwork = parsed.protocol === 'https:'
+    && /^[a-z0-9-]+\.mzstatic\.com$/i.test(parsed.hostname)
+    && /^\/image\/thumb\/[A-Za-z0-9_./-]+\.(?:jpe?g|png|webp)$/i.test(parsed.pathname);
+  if ((!tmdbImage && !appleArtwork) || parsed.search || parsed.hash) {
     return fail('BAD_URL', 'Image host or path not allowed.');
   }
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return fail('IMAGE', 'Image unavailable.');
+    const contentType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(contentType)) return fail('IMAGE', 'Image format is not supported.');
+    const contentLength = Number(res.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > 8_000_000) return fail('IMAGE', 'Image is too large.');
     const buf = new Uint8Array(await res.arrayBuffer());
+    if (buf.length > 8_000_000) return fail('IMAGE', 'Image is too large.');
     let bin = '';
     for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-    return { success: true, dataUrl: `data:${res.headers.get('content-type') || 'image/jpeg'};base64,${btoa(bin)}` };
+    return { success: true, dataUrl: `data:${contentType};base64,${btoa(bin)}` };
   } catch {
     return fail('IMAGE', 'Image unavailable.');
   }

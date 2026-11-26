@@ -239,7 +239,7 @@
         return ui.showMessage({ title: kind === 'movie' ? 'No reliable match' : 'No song recognised', body: d.message, actionLabel: 'Try again', onAction: retry });
       }
       if (kind === 'movie') ui.showMovie(d.matches, loadImage, { onRetry: retry });
-      else ui.showMusic(d.track, { onRetry: retry });
+      else ui.showMusic(d.track, loadImage, { onRetry: retry });
     } catch (e) {
       if (my.cancelled || e.code === 'CANCELLED') return;
       showError(e.code, e.message);

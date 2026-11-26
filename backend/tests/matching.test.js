@@ -39,3 +39,25 @@ test('normalizeTrack builds links only from real ids', () => {
   const t = normalizeTrack({ title: 'X', artists: [{ name: 'Y' }], external_metadata: { spotify: { track: { id: 'abc' } } } });
   assert.deepStrictEqual(t.links, [{ label: 'Spotify', url: 'https://open.spotify.com/track/abc' }]);
 });
+
+test('normalizeTrack exposes additive music metadata safely', () => {
+  const t = normalizeTrack({
+    title: 'A',
+    artists: [{ name: '  Artist  ' }, { name: '' }],
+    album: { name: 'Album' },
+    release_date: '2024-03-01',
+    duration_ms: 185000,
+    genres: [{ name: 'Rock' }],
+    score: 92,
+    label: ' Label ',
+    external_ids: { isrc: ' USABC2400001 ' },
+  });
+  assert.deepEqual(t.artists, ['Artist']);
+  assert.equal(t.album, 'Album');
+  assert.equal(t.releaseYear, 2024);
+  assert.equal(t.genre, 'Rock');
+  assert.equal(t.confidence, 'high');
+  assert.equal(t.confidenceScore, 92);
+  assert.equal(t.label, 'Label');
+  assert.equal(t.isrc, 'USABC2400001');
+});

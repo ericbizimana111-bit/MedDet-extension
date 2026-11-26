@@ -10,6 +10,7 @@
     "https://*.tiktok.com/*",
     "https://*.facebook.com/*",
     "https://image.tmdb.org/*",
+    "https://*.mzstatic.com/*",
     "http://localhost:5000/*"
   ],
   "background": { "service_worker": "background.js" },
