@@ -4,6 +4,7 @@ const { env } = require('../src/config/env');
 const httpsRequest = require('../src/utils/httpsRequest');
 const tmdb = require('../src/services/tmdb.service');
 const acr = require('../src/services/acrcloud.service');
+const { tmdbImage } = tmdb;
 
 test('TMDB reports upstream HTTP, network, and malformed JSON errors cleanly', async (t) => {
   const originalRequest = httpsRequest.requestHttps;
@@ -65,6 +66,72 @@ test('TMDB verifies media type and year, then checks bounded alternative titles 
   assert.equal(movie.titleMatch, 'exact');
   assert.equal(movie.yearMatch, 'same');
   assert.equal(calls.filter((url) => url.pathname === '/3/search/movie').length, 2);
+});
+
+test('TMDB details return official movie and TV artwork from existing detail responses', async (t) => {
+  const originalRequest = httpsRequest.requestHttps;
+  const originalKey = env.tmdb.apiKey;
+  env.tmdb.apiKey = 'test-key';
+  const details = [
+    {
+      id: 3,
+      title: 'Animated Film',
+      release_date: '2021-06-01',
+      poster_path: '/film-poster.jpg',
+      backdrop_path: '/film-backdrop.jpg',
+      genres: [{ name: 'Animation' }],
+      credits: { crew: [], cast: [] },
+    },
+    {
+      id: 4,
+      name: 'Anime Series',
+      first_air_date: '2022-01-01',
+      poster_path: '/anime-poster.png',
+      backdrop_path: null,
+      genres: [{ name: 'Animation' }],
+      credits: { crew: [], cast: [] },
+    },
+    {
+      id: 5,
+      title: 'No Artwork',
+      poster_path: '../unsafe.jpg',
+      backdrop_path: 'https://example.com/image.jpg',
+      credits: { crew: [], cast: [] },
+    },
+  ];
+  httpsRequest.requestHttps = async (url) => {
+    const parsed = new URL(url);
+    assert.match(parsed.pathname, /^\/3\/(?:movie|tv)\/\d+$/);
+    return { status: 200, body: JSON.stringify(details.shift()) };
+  };
+  t.after(() => {
+    httpsRequest.requestHttps = originalRequest;
+    env.tmdb.apiKey = originalKey;
+  });
+
+  const movie = await tmdb.getDetails('movie', 3);
+  assert.equal(movie.poster, 'https://image.tmdb.org/t/p/w342/film-poster.jpg');
+  assert.equal(movie.backdrop, 'https://image.tmdb.org/t/p/w780/film-backdrop.jpg');
+  assert.deepEqual(movie.genres, ['Animation']);
+
+  const tv = await tmdb.getDetails('tv', 4);
+  assert.equal(tv.mediaType, 'tv');
+  assert.equal(tv.title, 'Anime Series');
+  assert.equal(tv.poster, 'https://image.tmdb.org/t/p/w342/anime-poster.png');
+  assert.equal(tv.backdrop, null);
+  assert.deepEqual(tv.genres, ['Animation']);
+
+  const absent = await tmdb.getDetails('movie', 5);
+  assert.equal(absent.poster, null);
+  assert.equal(absent.backdrop, null);
+});
+
+test('TMDB image resolver rejects missing, malformed, and unsupported paths or sizes', () => {
+  assert.equal(tmdbImage(null, 'w342'), null);
+  assert.equal(tmdbImage('https://example.com/image.jpg', 'w780'), null);
+  assert.equal(tmdbImage('/../../unsafe.jpg', 'w342'), null);
+  assert.equal(tmdbImage('/poster.gif', 'w342'), null);
+  assert.equal(tmdbImage('/poster.jpg', 'unknown'), null);
 });
 
 test('ACRCloud signs and posts multipart audio through the IPv4 HTTPS client', async (t) => {

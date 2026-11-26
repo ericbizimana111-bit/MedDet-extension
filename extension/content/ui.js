@@ -27,14 +27,19 @@
 .body{padding:12px 14px 14px}
 .spin{width:28px;height:28px;border-radius:50%;border:3px solid #CFE3DF;border-top-color:#0F8F83;animation:s .8s linear infinite;margin-bottom:12px}
 @keyframes s{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion:reduce){.spin{animation-duration:2.4s}}
+@media (prefers-reduced-motion:reduce){.spin,.artwork.loading{animation-duration:2.4s}}
 h3{margin:0 0 4px;font-size:16px;font-weight:700}
 p{margin:0 0 10px;color:#3A4050}
 .bar{height:4px;border-radius:2px;background:#DAD8CF;overflow:hidden;margin:6px 0 12px}.bar i{display:block;height:100%;background:#0F8F83;transition:width .3s}
 .row{display:flex;gap:12px}
 .artwork{position:relative;margin:0 0 12px;overflow:hidden;border-radius:10px;background:#E6E4DC}
 .artwork[hidden]{display:none}
+.artwork.loading{display:grid;place-items:center;background:linear-gradient(110deg,#E6E4DC 20%,#F0EEE8 38%,#E6E4DC 56%);background-size:200% 100%;animation:artwork-load 1.4s ease-in-out infinite}
+.artwork.hero.loading{aspect-ratio:16/9}
+.artwork.loading figcaption{background:transparent}
+@keyframes artwork-load{to{background-position-x:-200%}}
 .artwork img{display:block;width:100%;height:auto;object-fit:cover}
+.artwork img[hidden]{display:none}
 .artwork.hero img{aspect-ratio:16/9}
 .artwork.poster-art{width:104px;flex:none}
 .artwork.poster-art img{aspect-ratio:2/3}
@@ -160,8 +165,6 @@ p{margin:0 0 10px;color:#3A4050}
 
   const LEVEL = { high: 'Strong match', possible: 'Possible match', low: 'Weak match' };
 
-  function posterEl(cls) { const i = h('img', { class: cls, alt: '' }); return i; }
-
   function isTmdbImageUrl(value) {
     if (typeof value !== 'string') return false;
     try {
@@ -190,15 +193,18 @@ p{margin:0 0 10px;color:#3A4050}
   }
 
   function artworkFigure(label, className) {
-    const image = h('img', { alt: label, loading: 'lazy', decoding: 'async' });
+    const image = h('img', { alt: label, loading: 'lazy', decoding: 'async', hidden: '' });
     const caption = h('figcaption', { text: label });
-    const element = h('figure', { class: 'artwork ' + className, hidden: '' }, image, caption);
+    const element = h('figure', { class: 'artwork ' + className, hidden: '', 'aria-busy': 'true' }, image, caption);
     return { element, image, caption };
   }
 
   async function loadArtwork(figure, sources, loadImage) {
     for (const source of sources) {
       try {
+        figure.element.hidden = false;
+        figure.element.classList.add('loading');
+        figure.caption.textContent = `Loading ${source.label.toLowerCase()}…`;
         const url = source.dataUrl || await loadImage(source.url);
         if (!url) continue;
         const loaded = await new Promise((resolve) => {
@@ -208,7 +214,11 @@ p{margin:0 0 10px;color:#3A4050}
         });
         if (!loaded) continue;
         figure.caption.textContent = source.label;
+        figure.image.alt = source.label;
+        figure.image.hidden = false;
         figure.element.hidden = false;
+        figure.element.setAttribute('aria-busy', 'false');
+        figure.element.classList.remove('loading');
         return source.kind;
       } catch {
         // A missing catalog image should fall through to the next verified source.
@@ -243,7 +253,7 @@ p{margin:0 0 10px;color:#3A4050}
           text: ambiguousStrongMatch ? 'Possible match (ambiguous)' : LEVEL[top.matchLevel] || 'Possible match',
         }),
         h('h3', { text: top.title }), h('div', { class: 'meta', text: meta }),
-        top.genres?.length ? h('div', { class: 'meta', text: top.genres.slice(0, 3).join(', ') } : null)),
+        top.genres?.length ? h('div', { class: 'meta', text: top.genres.slice(0, 3).join(', ') }) : null)),
       h('div', { class: 'meta', text: [
         top.modelConfidence ? 'Model confidence: ' + top.modelConfidence : null,
         catalogQuality ? 'Catalog check: ' + catalogQuality : null,
@@ -312,5 +322,6 @@ p{margin:0 0 10px;color:#3A4050}
     hideForCapture: (on) => { if (host) host.style.visibility = on ? 'hidden' : 'visible'; },
     reopenMenu: () => { closeAll(); toggleMenu(); },
     artworkSources,
+    loadArtwork,
   };
 })();

@@ -56,9 +56,12 @@ async function captureTab(sender) {
 
 // Page CSP can block remote images in injected UI, so poster images are fetched here.
 async function fetchImage(url) {
-  if (!/^https:\/\/image\.tmdb\.org\//.test(url)) return fail('BAD_URL', 'Image host not allowed.');
+  if (typeof url !== 'string'
+      || !/^https:\/\/image\.tmdb\.org\/t\/p\/(?:w\d{2,4}|original)\/[A-Za-z0-9_-]+\.(?:jpe?g|png|webp)$/i.test(url)) {
+    return fail('BAD_URL', 'Image host or path not allowed.');
+  }
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
     if (!res.ok) return fail('IMAGE', 'Image unavailable.');
     const buf = new Uint8Array(await res.arrayBuffer());
     let bin = '';

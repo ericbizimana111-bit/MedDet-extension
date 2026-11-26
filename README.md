@@ -40,6 +40,8 @@ curl http://localhost:5000/api/v1/health
   preserves timestamps and drops near-duplicates. Gemini assesses the frames together and TMDB verifies
   candidate titles. If evidence is insufficient or only a possible match is found, the user may request
   one additional analysis of up to 6 new frames. No more than 2 Gemini analyses are made per session.
+  Result cards prioritize official TMDB backdrops, then posters, then a captured frame as the main image.
+  When available, the poster is shown separately and a locally retained frame is labeled “Scene analyzed.”
   Strong, possible and weak labels are evidence categories, not calibrated probabilities.
 - **Music:** records ~12 seconds of the video's own audio, converts to 8 kHz mono WAV in the browser,
   backend sends it to ACRCloud. Silence, paused or muted video gives a clear message, not a fake result.
