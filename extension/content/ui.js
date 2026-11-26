@@ -142,16 +142,18 @@ p{margin:0 0 10px;color:#3A4050}
     open(h('div', {}, header('MedDet'), body));
   }
 
-  function showMessage({ title, body, actionLabel, onAction }) {
+  function showMessage({ title, body, actionLabel, onAction, secondaryActionLabel, onSecondaryAction }) {
     open(h('div', {}, header('MedDet'), h('div', { class: 'body' }, h('h3', { text: title }), h('p', { text: body }),
-      actionLabel ? h('div', { class: 'actions' }, h('button', { class: 'a p', text: actionLabel, onclick: onAction })) : null)));
+      actionLabel || secondaryActionLabel ? h('div', { class: 'actions' },
+        actionLabel ? h('button', { class: 'a p', text: actionLabel, onclick: onAction }) : null,
+        secondaryActionLabel ? h('button', { class: 'a', text: secondaryActionLabel, onclick: onSecondaryAction }) : null) : null)));
   }
 
   const LEVEL = { high: 'Strong match', possible: 'Possible match', low: 'Weak match' };
 
   function posterEl(cls) { const i = h('img', { class: cls, alt: '' }); return i; }
 
-  function showMovie(matches, loadImage, { onRetry }) {
+  function showMovie(matches, loadImage, { onRetry, onAnalyzeMore, status }) {
     const top = matches[0];
     const poster = posterEl('poster');
     loadImage(top.poster).then((u) => u && (poster.src = u));
@@ -176,10 +178,14 @@ p{margin:0 0 10px;color:#3A4050}
           h('div', {}, h('a', { class: 'meta', href: m.tmdbUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Details' })))));
       });
     }
+    if (onAnalyzeMore) {
+      parts.push(h('p', { text: 'This is a possible match. More visual evidence may improve confidence.' }));
+    }
     parts.push(h('div', { class: 'actions' },
       h('a', { class: 'a p', href: top.tmdbUrl, target: '_blank', rel: 'noopener noreferrer', text: 'View on TMDB' }),
+      onAnalyzeMore ? h('button', { class: 'a', text: 'Analyze more of this video', onclick: onAnalyzeMore }) : null,
       h('button', { class: 'a', text: 'Try again', onclick: onRetry })));
-    open(h('div', {}, header('Found it'), h('div', { class: 'body' }, parts)));
+    open(h('div', {}, header(status === 'possible_match' ? 'Possible match' : 'Identification result'), h('div', { class: 'body' }, parts)));
   }
 
   function showMusic(track, { onRetry }) {

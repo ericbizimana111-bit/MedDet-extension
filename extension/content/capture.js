@@ -78,11 +78,12 @@
     return c;
   }
 
-  async function captureFrames(video, { count = 4, intervalMs = 1500, onProgress, token } = {}) {
-    const frames = [], hashes = [], state = { method: null };
-    const target = video.paused ? 1 : count;
+  async function captureFrames(video, { count = 6, intervalMs = 1000, onProgress, token, excludeFrames = [] } = {}) {
+    const frames = [], hashes = excludeFrames.map((f) => f.hash).filter(Boolean), state = { method: null };
+    const target = video.paused ? 1 : Math.min(count, 6);
     for (let i = 0; i < target; i++) {
       if (token?.cancelled) throw new CaptureError('CANCELLED', 'Cancelled.');
+      if (!video.isConnected || (i > 0 && (video.paused || video.ended))) break;
       onProgress?.(i + 1, target);
       let c;
       try { c = await grab(video, state); }
@@ -94,9 +95,17 @@
       const h = dHash(c).bits;
       if (!hashes.some((x) => hamming(x, h) < 5)) {
         hashes.push(h);
-        frames.push({ image: c.toDataURL('image/jpeg', 0.72).split(',')[1], timestamp: Math.round(video.currentTime * 10) / 10 });
+        frames.push({
+          image: c.toDataURL('image/jpeg', 0.72).split(',')[1],
+          timestamp: Math.round(video.currentTime * 10) / 10,
+          hash: h,
+        });
       }
+      c.width = 0; c.height = 0;
       if (i < target - 1) await sleep(intervalMs);
+    }
+    if (!frames.length && !excludeFrames.length) {
+      throw new CaptureError('NO_FRAMES', 'No usable video frames could be captured.');
     }
     return frames;
   }

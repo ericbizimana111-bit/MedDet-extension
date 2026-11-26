@@ -2,6 +2,7 @@
 // No API keys live here. Keys stay on the server.
 
 const DEFAULT_BACKEND = 'http://localhost:5000';
+const activeIdentifications = new Map();
 
 async function backendUrl() {
   const { backendUrl: u } = await chrome.storage.sync.get('backendUrl');
@@ -10,25 +11,38 @@ async function backendUrl() {
 
 const fail = (code, message) => ({ success: false, error: { code, message } });
 
-async function identify(kind, body) {
+async function identify(kind, body, requestId) {
   const base = await backendUrl();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(new DOMException('Identification timed out', 'TimeoutError')), 60_000);
+  if (requestId) activeIdentifications.set(requestId, controller);
   let res;
   try {
     res = await fetch(`${base}/api/v1/identify/${kind}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60000),
+      signal: controller.signal,
     });
   } catch (e) {
-    if (e.name === 'TimeoutError') return fail('TIMEOUT', 'The server took too long to answer. Please try again.');
+    if (controller.signal.reason?.name === 'TimeoutError') return fail('TIMEOUT', 'The server took too long to answer. Please try again.');
+    if (controller.signal.aborted) return fail('CANCELLED', 'Identification was cancelled.');
     return fail('NETWORK', 'MedDet could not reach its server. Check your connection and the server address in the MedDet popup.');
+  } finally {
+    clearTimeout(timeout);
+    if (requestId && activeIdentifications.get(requestId) === controller) activeIdentifications.delete(requestId);
   }
   try {
     return await res.json();
   } catch {
     return fail('BAD_RESPONSE', 'The server sent an unexpected response.');
   }
+}
+
+function cancelIdentification(requestId) {
+  const controller = activeIdentifications.get(requestId);
+  if (controller) controller.abort(new DOMException('Identification cancelled', 'AbortError'));
+  return { success: true };
 }
 
 async function captureTab(sender) {
@@ -58,7 +72,8 @@ async function fetchImage(url) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     switch (msg?.type) {
-      case 'IDENTIFY': return identify(msg.kind, msg.body);
+      case 'IDENTIFY': return identify(msg.kind, msg.body, msg.requestId);
+      case 'CANCEL_IDENTIFY': return cancelIdentification(msg.requestId);
       case 'CAPTURE_TAB': return captureTab(sender);
       case 'IMAGE': return fetchImage(msg.url);
       default: return fail('UNKNOWN', 'Unknown message.');
