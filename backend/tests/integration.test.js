@@ -81,10 +81,18 @@ test('movie identification verifies candidate and applies confidence matching', 
       releaseYear: 2020,
       mediaType: 'movie',
       confidence: 'high',
-      evidence: ['A red car is visible'],
+      evidence: ['A red car is visible', 'The same distinctive driver appears in both frames'],
+      actorsOrCharacters: ['Unidentified driver'],
+      sceneDescription: 'A driver sits in a red car.',
     }],
   });
-  tmdb.verifyCandidate = async () => ({ type: 'movie', id: 12, score: 0.95 });
+  tmdb.verifyCandidate = async () => ({
+    type: 'movie',
+    id: 12,
+    score: 0.95,
+    titleMatch: 'exact',
+    yearMatch: 'same',
+  });
   tmdb.getDetails = async () => ({ tmdbId: 12, title: 'Example' });
   t.after(() => {
     gemini.identifyScene = originalGemini;
@@ -95,7 +103,92 @@ test('movie identification verifies candidate and applies confidence matching', 
   const result = await identification.identifyMovie({ frames: [{ image }] });
   assert.equal(result.status, 'completed');
   assert.equal(result.matches[0].matchLevel, 'high');
-  assert.deepEqual(result.matches[0].evidence, ['A red car is visible']);
+  assert.deepEqual(result.matches[0].evidence, [
+    'A red car is visible',
+    'The same distinctive driver appears in both frames',
+  ]);
+});
+
+test('movie workflow requests more evidence before TMDB and permits only one user-triggered second analysis', async (t) => {
+  const originalGemini = gemini.identifyScene;
+  const originalVerify = tmdb.verifyCandidate;
+  const originalDetails = tmdb.getDetails;
+  const firstFrame = { image, timestamp: 1 };
+  const secondFrame = { image: image.replace(/.$/, 'A'), timestamp: 2 };
+  let geminiCalls = 0;
+  let verifyCalls = 0;
+  gemini.identifyScene = async (frames, options) => {
+    geminiCalls += 1;
+    if (geminiCalls === 1) {
+      return {
+        candidates: [{ title: 'Example', mediaType: 'movie', confidence: 'medium', evidence: ['A red car is visible'] }],
+        requiresMoreEvidence: true,
+        uncertaintyReason: 'Only one distinctive clue is visible.',
+      };
+    }
+    assert.equal(frames.length, 2);
+    assert.equal(options.priorCandidates[0].title, 'Example');
+    return {
+      candidates: [{
+        title: 'Example',
+        mediaType: 'movie',
+        confidence: 'high',
+        evidence: ['A red car is visible', 'The same distinctive driver appears in both frames'],
+      }],
+      requiresMoreEvidence: false,
+    };
+  };
+  tmdb.verifyCandidate = async () => {
+    verifyCalls += 1;
+    return { type: 'movie', id: 12, score: 1, titleMatch: 'exact', yearMatch: 'same' };
+  };
+  tmdb.getDetails = async () => ({ tmdbId: 12, title: 'Example' });
+  t.after(() => {
+    gemini.identifyScene = originalGemini;
+    tmdb.verifyCandidate = originalVerify;
+    tmdb.getDetails = originalDetails;
+  });
+
+  const first = await identification.identifyMovie({ pass: 'initial', frames: [firstFrame] });
+  assert.equal(first.status, 'insufficient_evidence');
+  assert.equal(first.matches.length, 0);
+  assert.equal(first.candidates[0].title, 'Example');
+  assert.equal(typeof first.sessionId, 'string');
+  assert.equal(verifyCalls, 0);
+
+  const second = await identification.identifyMovie({
+    pass: 'additional',
+    sessionId: first.sessionId,
+    priorFrames: [firstFrame],
+    frames: [secondFrame],
+  });
+  assert.equal(second.status, 'completed');
+  assert.equal(geminiCalls, 2);
+  assert.equal(verifyCalls, 1);
+  await assert.rejects(identification.identifyMovie({
+    pass: 'additional',
+    sessionId: first.sessionId,
+    priorFrames: [firstFrame],
+    frames: [secondFrame],
+  }), (error) => error.code === 'SESSION_COMPLETE');
+  assert.equal(geminiCalls, 2);
+});
+
+test('movie analysis does not issue a second attempt automatically after an upstream failure', async (t) => {
+  const originalGemini = gemini.identifyScene;
+  const originalVerify = tmdb.verifyCandidate;
+  let calls = 0;
+  gemini.identifyScene = async () => {
+    calls += 1;
+    throw Object.assign(new Error('temporary outage'), { code: 'AI_UNAVAILABLE' });
+  };
+  tmdb.verifyCandidate = async () => { throw new Error('TMDB must not run'); };
+  t.after(() => {
+    gemini.identifyScene = originalGemini;
+    tmdb.verifyCandidate = originalVerify;
+  });
+  await assert.rejects(identification.identifyMovie({ pass: 'initial', frames: [{ image }] }), (error) => error.code === 'AI_UNAVAILABLE');
+  assert.equal(calls, 1);
 });
 
 test('music endpoint accepts validated audio but reports missing ACRCloud configuration', async (t) => {

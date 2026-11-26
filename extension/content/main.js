@@ -209,7 +209,12 @@
   }
 
   // The panel is for one video. If the user closes it, release the lock so the button can follow another video.
-  ui.onClose(() => { token && (token.cancelled = true); locked = null; });
+  ui.onClose(() => {
+    token && (token.cancelled = true);
+    if (activeRequestId) sendMsg({ type: 'CANCEL_IDENTIFY', requestId: activeRequestId });
+    activeRequestId = null;
+    locked = null;
+  });
 
   function init() {
     ui.mount();

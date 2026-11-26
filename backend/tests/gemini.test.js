@@ -11,6 +11,8 @@ const validModelResult = {
     releaseYear: 2020,
     mediaType: 'movie',
     evidence: ['A red car is visible'],
+    actorsOrCharacters: ['Unidentified driver'],
+    sceneDescription: 'A driver sits in a red car.',
     confidence: 'medium',
   }],
   requiresMoreEvidence: false,
@@ -27,6 +29,7 @@ function stubRequest(t, responseOrError) {
   httpsRequest.requestHttps = async (_url, options) => {
     assert.equal(options.method, 'POST');
     assert.equal(options.timeoutMs, 40_000);
+    assert.equal(options.totalTimeoutMs, 42_000);
     assert.equal(options.headers['x-goog-api-key'], 'test-key');
     if (responseOrError instanceof Error) throw responseOrError;
     return responseOrError;
@@ -43,17 +46,12 @@ test('Gemini response is parsed and validated against the candidate schema', () 
   assert.equal(result.candidates[0].confidence, 'medium');
 });
 
-test('malformed Gemini envelopes are controlled errors; malformed model JSON is a safe no-match', () => {
+test('malformed Gemini envelopes and model output are explicit invalid-response errors', () => {
   assert.throws(() => parseGeminiResponse('{'), (error) => error.code === 'AI_INVALID_RESPONSE');
   assert.throws(() => parseGeminiResponse(JSON.stringify({ candidates: [{}] })), AppError);
-  assert.deepEqual(parseGeminiResponse(geminiEnvelope('not json')), {
-    candidates: [],
-    requiresMoreEvidence: true,
-  });
-  assert.deepEqual(parseGeminiResponse(geminiEnvelope(JSON.stringify({ candidates: [{ title: 7 }] }))), {
-    candidates: [],
-    requiresMoreEvidence: true,
-  });
+  assert.throws(() => parseGeminiResponse(geminiEnvelope('not json')), (error) => error.code === 'AI_INVALID_RESPONSE');
+  assert.throws(() => parseGeminiResponse(geminiEnvelope(JSON.stringify({ candidates: [{ title: 7 }] }))), (error) => error.code === 'AI_INVALID_RESPONSE');
+  assert.throws(() => parseGeminiResponse(geminiEnvelope('')), (error) => error.code === 'AI_INVALID_RESPONSE');
 });
 
 test('Gemini maps rejected, quota, busy, and unexpected upstream statuses safely', async (t) => {
@@ -93,4 +91,28 @@ test('Gemini network timeout and connection failures do not expose upstream deta
 test('successful Gemini HTTP response with malformed envelope does not crash callers', async (t) => {
   stubRequest(t, { status: 200, body: '{"candidates":[{}]}' });
   await assert.rejects(identifyScene([{ image: 'image-data' }]), (error) => error.code === 'AI_INVALID_RESPONSE');
+});
+
+test('Gemini sends time-ordered inline images and prior candidates for reassessment', async (t) => {
+  const previous = httpsRequest.requestHttps;
+  const previousKey = env.gemini.apiKey;
+  env.gemini.apiKey = 'test-key';
+  httpsRequest.requestHttps = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.match(body.contents[0].parts[0].text, /Ignore TikTok, Instagram and YouTube/);
+    assert.match(body.contents[0].parts[1].text, /Prior unconfirmed candidates/);
+    assert.equal(body.contents[0].parts[3].inlineData.data, 'first');
+    assert.equal(body.contents[0].parts[5].inlineData.data, 'second');
+    assert.equal(body.generationConfig.responseMimeType, 'application/json');
+    return { status: 200, body: geminiEnvelope(JSON.stringify(validModelResult)) };
+  };
+  t.after(() => {
+    httpsRequest.requestHttps = previous;
+    env.gemini.apiKey = previousKey;
+  });
+
+  await identifyScene([
+    { image: 'first', timestamp: 1, mimeType: 'image/jpeg' },
+    { image: 'second', timestamp: 2, mimeType: 'image/jpeg' },
+  ], { priorCandidates: [validModelResult.candidates[0]] });
 });

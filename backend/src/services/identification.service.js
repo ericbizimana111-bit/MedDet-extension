@@ -1,44 +1,235 @@
+const crypto = require('crypto');
 const gemini = require('./gemini.service');
 const tmdb = require('./tmdb.service');
 const acr = require('./acrcloud.service');
 const { prepareFrames } = require('./frame.service');
-const { matchLevel, CONF_WEIGHT } = require('../utils/matching');
+const { matchLevel } = require('../utils/matching');
+const AppError = require('../utils/AppError');
 
-async function identifyMovie({ frames }) {
+const SESSION_TTL_MS = 15 * 60_000;
+const MAX_SESSIONS = 1000;
+const analysisSessions = new Map();
+
+function pruneSessions() {
+  const now = Date.now();
+  for (const [id, session] of analysisSessions) {
+    if (session.expiresAt <= now) analysisSessions.delete(id);
+  }
+  while (analysisSessions.size >= MAX_SESSIONS) {
+    analysisSessions.delete(analysisSessions.keys().next().value);
+  }
+}
+
+function createSession(candidates, frames) {
+  pruneSessions();
+  const sessionId = crypto.randomBytes(32).toString('base64url');
+  analysisSessions.set(sessionId, {
+    candidates,
+    frameHashes: new Set(frames.map((frame) => frame.hash)),
+    attempts: 1,
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  });
+  return sessionId;
+}
+
+function getSession(sessionId) {
+  const session = analysisSessions.get(sessionId);
+  if (!session || session.expiresAt <= Date.now()) {
+    analysisSessions.delete(sessionId);
+    throw new AppError(410, 'SESSION_EXPIRED', 'This additional-analysis session has expired. Start a new identification.');
+  }
+  if (session.attempts >= 2) {
+    throw new AppError(409, 'SESSION_COMPLETE', 'This session has already used its two analysis attempts.');
+  }
+  return session;
+}
+
+function evidenceQuality(candidate) {
+  const count = new Set(candidate.evidence.map((entry) => entry.trim().toLowerCase()).filter(Boolean)).size;
+  return count >= 2 ? 'multiple_clues' : 'limited_clues';
+}
+
+function catalogMatchQuality(verification) {
+  if (verification.titleMatch === 'partial') return 'partial_title';
+  if (verification.yearMatch === 'same') return 'exact_title_and_year';
+  if (verification.yearMatch === 'within_one_year') return 'exact_title_year_close';
+  if (verification.yearMatch === 'different') return 'exact_title_year_mismatch';
+  return 'exact_title_year_unknown';
+}
+
+async function rankCandidates(candidates, { signal, deadlineAt }) {
+  const groupController = new AbortController();
+  const requestSignal = signal
+    ? AbortSignal.any([signal, groupController.signal])
+    : groupController.signal;
+  try {
+    const verified = await Promise.all(candidates.slice(0, 3).map(async (candidate) => {
+      try {
+        const verification = await tmdb.verifyCandidate(candidate, { signal: requestSignal, deadlineAt });
+        return verification ? { candidate, verification } : null;
+      } catch (error) {
+        groupController.abort(error);
+        throw error;
+      }
+    }));
+    const unique = new Map();
+    for (const item of verified.filter(Boolean)) {
+      const key = `${item.verification.type}:${item.verification.id}`;
+      if (!unique.has(key)) unique.set(key, item);
+    }
+
+    const ranked = [...unique.values()].map(({ candidate, verification }) => ({
+      candidate,
+      verification,
+      level: matchLevel(candidate, verification),
+    })).filter((item) => item.level !== 'none');
+
+    const levelOrder = { high: 3, possible: 2, low: 1 };
+    ranked.sort((a, b) => (levelOrder[b.level] - levelOrder[a.level])
+      || (b.verification.score - a.verification.score)
+      || (b.candidate.evidence.length - a.candidate.evidence.length));
+
+    const matches = await Promise.all(ranked.map(async ({ candidate, verification, level }) => {
+      try {
+        const details = await tmdb.getDetails(verification.type, verification.id, { signal: requestSignal, deadlineAt });
+        return {
+          ...details,
+          matchLevel: level,
+          modelConfidence: candidate.confidence,
+          evidenceQuality: evidenceQuality(candidate),
+          catalogMatchQuality: catalogMatchQuality(verification),
+          actorsOrCharacters: candidate.actorsOrCharacters,
+          sceneDescription: candidate.sceneDescription || '',
+          evidence: candidate.evidence,
+        };
+      } catch (error) {
+        groupController.abort(error);
+        throw error;
+      }
+    }));
+    return matches;
+  } catch (error) {
+    if (!groupController.signal.aborted) groupController.abort(error);
+    throw error;
+  }
+}
+
+function insufficientEvidence(candidates, uncertaintyReason, sessionId) {
+  return {
+    status: 'insufficient_evidence',
+    matches: [],
+    candidates,
+    uncertaintyReason: uncertaintyReason || 'The available frames do not contain enough distinct visual clues.',
+    message: 'MedDet needs more visual evidence before it can verify a production.',
+    ...(sessionId ? { sessionId } : {}),
+  };
+}
+
+async function identifyInitial({ frames, signal, deadlineAt }) {
   const prepared = prepareFrames(frames);
-  const ai = await gemini.identifyScene(prepared);
+  const ai = await gemini.identifyScene(prepared, { signal, deadlineAt });
 
+  if (ai.requiresMoreEvidence) {
+    const sessionId = createSession(ai.candidates, prepared);
+    return insufficientEvidence(ai.candidates, ai.uncertaintyReason, sessionId);
+  }
   if (!ai.candidates.length) {
-    return { status: 'no_match', matches: [], message: 'MedDet could not find enough evidence to name this scene. Try again on a moment with clearer faces or a wider shot.' };
+    return {
+      status: 'no_match',
+      matches: [],
+      message: 'The available frames were analyzed, but they did not support a credible movie or TV match.',
+    };
   }
 
-  // Verify every AI candidate against TMDB, then rank by evidence.
-  const verified = [];
-  const seen = new Set();
-  for (const c of ai.candidates.slice(0, 3)) {
-    const v = await tmdb.verifyCandidate(c);
-    if (!v) continue;
-    const key = `${v.type}:${v.id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    verified.push({ cand: c, v, rank: v.score * 0.6 + (CONF_WEIGHT[c.confidence] ?? 0.3) * 0.4 });
-  }
-  verified.sort((a, b) => b.rank - a.rank);
-
-  const matches = [];
-  for (const { cand, v } of verified) {
-    const level = matchLevel(cand.confidence, v.score);
-    if (level === 'none') continue;
-    const details = await tmdb.getDetails(v.type, v.id);
-    matches.push({ ...details, matchLevel: level, evidence: cand.evidence });
-  }
-
+  const matches = await rankCandidates(ai.candidates, { signal, deadlineAt });
   if (!matches.length) {
-    return { status: 'no_match', matches: [], message: 'MedDet had a guess, but it could not be verified in the movie database, so it is not shown.' };
+    return {
+      status: 'no_match',
+      matches: [],
+      message: 'MedDet found possible titles, but none could be verified reliably in the movie database.',
+    };
   }
-  const best = matches[0];
-  const status = best.matchLevel === 'high' && (matches.length === 1 || matches[1].matchLevel !== 'high') ? 'completed' : 'multiple_candidates';
-  return { status, matches };
+
+  const hasSingleStrongMatch = matches[0].matchLevel === 'high'
+    && matches.filter((match) => match.matchLevel === 'high').length === 1;
+  if (hasSingleStrongMatch) return { status: 'completed', matches, candidates: ai.candidates };
+
+  const sessionId = createSession(ai.candidates, prepared);
+  return {
+    status: 'possible_match',
+    matches,
+    candidates: ai.candidates,
+    uncertaintyReason: ai.uncertaintyReason || 'Additional frames may help distinguish this candidate from alternatives.',
+    message: 'MedDet found a possible match, but the available visual evidence is not strong enough to confirm it.',
+    sessionId,
+  };
+}
+
+async function identifyAdditional({ frames, priorFrames, sessionId, signal, deadlineAt }) {
+  const session = getSession(sessionId);
+  const prior = prepareFrames(priorFrames);
+  if (prior.some((frame) => !session.frameHashes.has(frame.hash))) {
+    throw new AppError(400, 'SESSION_FRAME_MISMATCH', 'The prior frames do not match this analysis session.');
+  }
+  const additional = prepareFrames(frames);
+  session.attempts = 2;
+
+  const priorHashes = new Set(prior.map((frame) => frame.hash));
+  const fresh = additional.filter((frame) => !session.frameHashes.has(frame.hash) && !priorHashes.has(frame.hash));
+  if (!fresh.length) {
+    return insufficientEvidence(
+      session.candidates,
+      'No distinct new frames were available. Let the video play or move to another moment.',
+      undefined
+    );
+  }
+
+  const combined = [...prior, ...fresh]
+    .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0))
+    .slice(0, 12);
+  const ai = await gemini.identifyScene(combined, {
+    priorCandidates: session.candidates,
+    signal,
+    deadlineAt,
+  });
+
+  if (ai.requiresMoreEvidence) {
+    return insufficientEvidence(ai.candidates.length ? ai.candidates : session.candidates, ai.uncertaintyReason);
+  }
+  if (!ai.candidates.length) {
+    return {
+      status: 'no_match',
+      matches: [],
+      candidates: [],
+      message: 'The additional frames were analyzed, but they did not support a credible movie or TV match.',
+    };
+  }
+
+  const matches = await rankCandidates(ai.candidates, { signal, deadlineAt });
+  if (!matches.length) {
+    return {
+      status: 'no_match',
+      matches: [],
+      candidates: ai.candidates,
+      message: 'The additional analysis produced possible titles, but none could be verified reliably in the movie database.',
+    };
+  }
+  const hasSingleStrongMatch = matches[0].matchLevel === 'high'
+    && matches.filter((match) => match.matchLevel === 'high').length === 1;
+  return {
+    status: hasSingleStrongMatch ? 'completed' : 'possible_match',
+    matches,
+    candidates: ai.candidates,
+    ...(hasSingleStrongMatch ? {} : {
+      uncertaintyReason: ai.uncertaintyReason || 'The additional frames did not provide enough independent clues for a strong match.',
+      message: 'This remains a possible match; the available evidence does not justify a confirmed identification.',
+    }),
+  };
+}
+
+async function identifyMovie(request) {
+  if (request.pass === 'additional') return identifyAdditional(request);
+  return identifyInitial(request);
 }
 
 async function identifyMusic({ audio, mimeType }) {

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { normalizeTitle, scoreTmdbResult, matchLevel } = require('../src/utils/matching');
+const { normalizeTitle, compareTmdbResult, scoreTmdbResult, matchLevel } = require('../src/utils/matching');
 const { normalizeTrack } = require('../src/services/acrcloud.service');
 
 test('normalizeTitle ignores articles, case, punctuation, accents', () => {
@@ -24,11 +24,15 @@ test('year mismatch lowers the score', () => {
   assert.ok(same > other);
 });
 
-test('matchLevel needs both strong AI confidence and strong verification for high', () => {
-  assert.strictEqual(matchLevel('high', 0.95), 'high');
-  assert.strictEqual(matchLevel('low', 0.95), 'low');
-  assert.strictEqual(matchLevel('medium', 0.95), 'possible');
-  assert.strictEqual(matchLevel('high', 0.2), 'none');
+test('matchLevel distinguishes model confidence from catalog and evidence quality', () => {
+  const verification = compareTmdbResult(
+    { title: 'Inception', releaseYear: 2010 },
+    { title: 'Inception', release_date: '2010-07-15' }
+  );
+  assert.strictEqual(matchLevel({ confidence: 'high', evidence: ['clue one', 'clue two'] }, verification), 'high');
+  assert.strictEqual(matchLevel({ confidence: 'high', evidence: ['one clue'] }, verification), 'possible');
+  assert.strictEqual(matchLevel({ confidence: 'low', evidence: ['one clue'] }, verification), 'low');
+  assert.strictEqual(matchLevel({ confidence: 'high', evidence: ['one clue'] }, { score: 0.2 }), 'none');
 });
 
 test('normalizeTrack builds links only from real ids', () => {

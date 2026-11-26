@@ -29,6 +29,16 @@ const imageSchema = z.string().min(100).max(MAX_FRAME_B64 + 40).superRefine((inp
   }
 }).transform(stripDataUrl);
 
+const frameSchema = z.object({
+  image: imageSchema,
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).optional(),
+  timestamp: z.number().min(0).max(86400).optional(),
+}).superRefine((frame, ctx) => {
+  if (frame.mimeType && imageMimeType(frame.image) !== frame.mimeType) {
+    ctx.addIssue({ code: 'custom', path: ['mimeType'], message: 'does not match the image data' });
+  }
+});
+
 const audioSchema = z.string().min(100).max(MAX_AUDIO_B64 + 40).superRefine((input, ctx) => {
   const match = input.match(/^data:([^;,]+);base64,/i);
   const base64 = stripDataUrl(input);
@@ -41,22 +51,25 @@ const audioSchema = z.string().min(100).max(MAX_AUDIO_B64 + 40).superRefine((inp
 });
 
 const movieSchema = z.object({
-  frames: z
-    .array(
-      z.object({
-        image: imageSchema,
-        mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).optional(),
-        timestamp: z.number().min(0).max(86400).optional(),
-      }).superRefine((frame, ctx) => {
-        if (frame.mimeType && imageMimeType(frame.image) !== frame.mimeType) {
-          ctx.addIssue({ code: 'custom', path: ['mimeType'], message: 'does not match the image data' });
-        }
-      })
-    )
-    .min(1)
-    .max(6),
+  pass: z.enum(['initial', 'additional']).default('initial'),
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{43}$/).optional(),
+  frames: z.array(frameSchema).min(1).max(6),
+  priorFrames: z.array(frameSchema).min(1).max(6).optional(),
   platform,
-  videoContext: z.object({ currentTime: z.number().optional() }).optional(),
+  videoContext: z.object({
+    currentTime: z.number().finite().min(0).optional(),
+    duration: z.number().finite().min(0).optional(),
+    width: z.number().int().positive().max(16384).optional(),
+    height: z.number().int().positive().max(16384).optional(),
+    paused: z.boolean().optional(),
+  }).optional(),
+}).superRefine((request, ctx) => {
+  if (request.pass === 'initial' && (request.sessionId || request.priorFrames)) {
+    ctx.addIssue({ code: 'custom', path: ['pass'], message: 'initial analysis cannot include a prior session' });
+  }
+  if (request.pass === 'additional' && (!request.sessionId || !request.priorFrames?.length)) {
+    ctx.addIssue({ code: 'custom', path: ['sessionId'], message: 'additional analysis requires a valid session and prior frames' });
+  }
 });
 
 const musicSchema = z.object({

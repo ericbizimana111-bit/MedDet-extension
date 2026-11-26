@@ -5,18 +5,39 @@ function requestHttps(url, {
   headers = {},
   body,
   timeoutMs = 10_000,
+  totalTimeoutMs,
+  signal,
   maxResponseBytes = 2_000_000,
 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let totalTimer;
+    let onAbort;
+    let req;
+    const cleanup = () => {
+      if (totalTimer) clearTimeout(totalTimer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    };
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
+      cleanup();
       if (error) reject(error);
       else resolve(value);
     };
 
-    const req = https.request(url, {
+    const abortError = () => {
+      const reason = signal?.reason;
+      const error = new Error(reason?.message || 'Upstream request was cancelled');
+      error.code = reason?.code || (reason?.name === 'TimeoutError' ? 'ETIMEDOUT' : 'ABORT_ERR');
+      return error;
+    };
+    if (signal?.aborted) {
+      finish(abortError());
+      return;
+    }
+
+    req = https.request(url, {
       method,
       family: 4,
       headers,
@@ -50,6 +71,22 @@ function requestHttps(url, {
       req.destroy(error);
     });
     req.on('error', (error) => finish(error));
+    if (Number.isFinite(totalTimeoutMs) && totalTimeoutMs > 0) {
+      totalTimer = setTimeout(() => {
+        const error = new Error('Upstream request exceeded its total deadline');
+        error.code = 'ETIMEDOUT';
+        finish(error);
+        req.destroy(error);
+      }, totalTimeoutMs);
+    }
+    if (signal) {
+      onAbort = () => {
+        const error = abortError();
+        finish(error);
+        req.destroy(error);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
     if (body !== undefined) req.write(body);
     req.end();
   });

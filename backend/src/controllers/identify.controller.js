@@ -2,7 +2,7 @@ const svc = require('../services/identification.service');
 
 const movie = async (req, res, next) => {
   try {
-    const data = await svc.identifyMovie(req.body);
+    const data = await svc.identifyMovie({ ...req.body, ...req.identificationContext });
     res.json({ success: true, data: { type: 'movie', ...data } });
   } catch (e) { next(e); }
 };

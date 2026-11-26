@@ -9,12 +9,15 @@ const candidateSchema = z.object({
   releaseYear: z.number().int().min(1888).max(2100).nullish(),
   mediaType: z.enum(['movie', 'tv']).default('movie'),
   evidence: z.array(z.string().max(300)).max(6).default([]),
+  actorsOrCharacters: z.array(z.string().max(120)).max(6).default([]),
+  sceneDescription: z.string().max(500).optional(),
   confidence: z.enum(['high', 'medium', 'low']).default('low'),
 });
 
 const resultSchema = z.object({
-  candidates: z.array(candidateSchema).max(5).default([]),
-  requiresMoreEvidence: z.boolean().default(false),
+  candidates: z.array(candidateSchema).max(3),
+  requiresMoreEvidence: z.boolean(),
+  uncertaintyReason: z.string().max(300).optional(),
 });
 
 const responseSchema = z.object({
@@ -25,17 +28,18 @@ const responseSchema = z.object({
   })).min(1),
 });
 
-const PROMPT = `You are the scene-recognition engine of a movie and TV identification tool.
-You receive several frames taken from ONE short video clip, in time order.
-Task: decide which movie or TV show the clip comes from.
-Rules:
-- Use visual evidence only: recognisable actors/characters, costumes, sets, locations, props, on-screen subtitles or text, cinematography.
-- The clip may be cropped, vertical, filtered, watermarked or have caption overlays. Ignore social-media UI and watermarks.
-- Do NOT guess. If the evidence is not enough to name a specific title, return an empty candidates list and requiresMoreEvidence=true.
-- Return at most 3 candidates, best first. Set confidence to "high" only if several independent clues agree.
-- Evidence entries must describe what you actually see in the frames.
+const PROMPT = `You identify films and television productions from a set of time-ordered video frames.
+Analyze the frames together as one scene; do not identify a title from a single generic visual resemblance.
+Consider recognizable actors or animated characters, appearance, clothing and costumes, locations, environments, buildings and sets, props, visible dialogue subtitles, on-screen text, distinctive events, cinematography and continuity across frames.
+Treat subtitles only as supporting context, never as proof of the title. Do not rely on creator captions, social overlays or watermarks.
+Ignore TikTok, Instagram and YouTube interface elements, watermarks, reaction-video hosts, commentary, edits and unrelated creator captions. Distinguish original production footage from commentary, reaction videos or fan edits when the frames support that distinction.
+Do not invent titles, actors, characters, scenes or events. Do not state actor or character identities unless the visual evidence supports them. Treat conflicting clues as uncertainty.
+Return a candidate only when specific visual evidence supports it. Distinguish a movie from a TV production. Return candidates best-first, at most three, and only include alternatives when there is real ambiguity.
+For every candidate, provide separate visible clues, named actors or characters only when confidently recognizable, and a concise scene description. High confidence requires multiple independent visual clues that agree across the frames; this is model-reported confidence, not proof.
+Set requiresMoreEvidence=true when clearer or additional frames could reasonably resolve uncertainty. Set it false when the analyzed evidence is sufficient to conclude that no credible production match can be made. Explain uncertainty briefly when relevant.
+If prior candidates are supplied, reassess them against all frames, including new evidence. Do not anchor on them; retain, revise or reject each candidate based on the combined evidence.
 Respond with JSON only, exactly in this shape:
-{"candidates":[{"title":string,"releaseYear":number|null,"mediaType":"movie"|"tv","evidence":[string],"confidence":"high"|"medium"|"low"}],"requiresMoreEvidence":boolean}`;
+{"candidates":[{"title":string,"releaseYear":number|null,"mediaType":"movie"|"tv","evidence":[string],"actorsOrCharacters":[string],"sceneDescription":string,"confidence":"high"|"medium"|"low"}],"requiresMoreEvidence":boolean,"uncertaintyReason":string}`;
 
 function parseGeminiResponse(body) {
   let data;
@@ -54,22 +58,25 @@ function parseGeminiResponse(body) {
     .map((part) => part.text || '')
     .join('')
     .trim();
-  if (!text) return { candidates: [], requiresMoreEvidence: true };
+  if (!text) {
+    throw new AppError(502, 'AI_INVALID_RESPONSE', 'The analysis service returned an empty response.');
+  }
 
   let json;
   try {
     json = JSON.parse(text.replace(/```json|```/g, '').trim());
   } catch {
-    return { candidates: [], requiresMoreEvidence: true };
+    throw new AppError(502, 'AI_INVALID_RESPONSE', 'The analysis service returned invalid JSON.');
   }
 
   const parsedResult = resultSchema.safeParse(json);
-  return parsedResult.success
-    ? parsedResult.data
-    : { candidates: [], requiresMoreEvidence: true };
+  if (!parsedResult.success) {
+    throw new AppError(502, 'AI_INVALID_RESPONSE', 'The analysis service returned an invalid result.');
+  }
+  return parsedResult.data;
 }
 
-async function identifyScene(frames) {
+async function identifyScene(frames, { priorCandidates = [], signal, deadlineAt } = {}) {
   if (!env.gemini.apiKey) {
     throw new AppError(
       503,
@@ -79,6 +86,9 @@ async function identifyScene(frames) {
   }
 
   const parts = [{ text: PROMPT }];
+  if (priorCandidates.length) {
+    parts.push({ text: `Prior unconfirmed candidates for reassessment (not trusted conclusions): ${JSON.stringify(priorCandidates)}` });
+  }
 
   frames.forEach((f, i) => {
     parts.push({
@@ -113,11 +123,19 @@ async function identifyScene(frames) {
       },
       body: payload,
       timeoutMs: 40_000,
+      totalTimeoutMs: Math.max(1, Math.min(42_000, deadlineAt ? deadlineAt - Date.now() : 42_000)),
+      signal,
       maxResponseBytes: 2_000_000,
     });
   } catch (error) {
     if (error.code !== 'ERESPONSETOOLARGE') {
       console.error('[gemini] Request failed:', error.code || 'network error');
+    }
+    if (signal?.aborted && signal.reason?.code === 'REQUEST_DEADLINE') {
+      throw new AppError(504, 'REQUEST_TIMEOUT', 'The complete identification request exceeded its time limit.');
+    }
+    if (signal?.aborted && signal.reason?.code === 'ABORT_ERR') {
+      throw new AppError(499, 'REQUEST_CANCELLED', 'The identification request was cancelled.');
     }
     if (error.code === 'ETIMEDOUT') {
       throw new AppError(504, 'AI_TIMEOUT', 'The analysis service could not be reached. Please try again.');
